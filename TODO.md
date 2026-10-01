@@ -2,23 +2,18 @@
 
 ## Platforms
 
-- [ ] Linux x86_64 (also with AVX512; there is no SIMD code, so the CPU
-      features do not matter): not yet built or tested.  The CI job
-      `linux-x86_64` reports build and test results but does not fail the
-      run.  To check:
-      - it builds and runs (`sys.rs` has Linux values for `MAP_ANON`,
-        `SIGBUS`; glibc `getopt` reorders arguments, as the C program
-        does on Linux);
-      - normal input gives the same output as the C program built on
-        Linux;
-      - undefined-behaviour cases (over-limit patterns, crashes) follow the
-        macOS arm64 build; a Linux C build has another memory layout, so
-        these can differ.  Decide if Linux needs its own reference.
-
-Problems of the original `scan_for_matches`. Version 0.0.0 keeps all of
-them on purpose (exact reproduction). A fix changes output compared with
-the C program, so fixes should go behind an option (for example `--fixed`)
-or into a new major version.
+- [ ] Linux x86_64: decide if Linux needs its own reference.
+      CI result (2026-10-01, GitHub `ubuntu-latest`, AMD EPYC 9V74 with
+      AVX512; there is no SIMD code, so CPU features do not matter):
+      - builds and runs; the original test suite passes;
+      - 786 of 788 golden cases (recorded on macOS arm64) match;
+      - the 2 differences are undefined-behaviour cases:
+        `p50` crash (Linux stdio writes 4096 bytes before the SIGSEGV,
+        macOS none) and data byte 0xA5 (reads a byte of a heap pointer;
+        Linux heap addresses differ);
+      - not yet compared with the C program built on Linux (its memory
+        layout, and so its undefined-behaviour results, differ from the
+        macOS build).  Normal input is expected to match.
 
 ## A. Bugs: crash, hang or silently wrong result
 
