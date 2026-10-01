@@ -19,6 +19,7 @@
 //!   * the coded sequence buffer (C: `cdata`), with the slack before it and
 //!     the low 24 address bits of the reference runs.
 //!   * malloc(16) blocks for rule sets.
+//!
 //! Emulated addresses are host addresses, so a checked pointer is used
 //! directly.  Every access is range checked unless the pointer was checked
 //! before (see `Pol`); an access outside these blocks ends the program the
@@ -519,7 +520,7 @@ fn name_id(l: &[u8], p: usize) -> Option<(i32, usize)> {
         return None;
     }
     match num(l, p + 1) {
-        Some((n, p)) if n >= 0 && n <= MAX_NAMES => Some((n, p)),
+        Some((n, p)) if (0..=MAX_NAMES).contains(&n) => Some((n, p)),
         _ => None,
     }
 }
@@ -535,7 +536,7 @@ fn rule_id(l: &[u8], p: usize) -> Option<(i32, usize)> {
         return None;
     }
     match num(l, p + 1) {
-        Some((n, p)) if n >= 0 && n <= MAX_NAMES => Some((n, p)),
+        Some((n, p)) if (0..=MAX_NAMES).contains(&n) => Some((n, p)),
         _ => None,
     }
 }
@@ -606,9 +607,9 @@ fn parse_bonds(l: &[u8], p: usize, rs: &mut [u8; 16]) -> Option<usize> {
         if at(l, p) != b',' {
             return Some(p);
         }
-        match bond(l, p + 1, rs) {
-            Some(q) => p = q,
-            None => return None,
+        {
+            let q = bond(l, p + 1, rs)?;
+            p = q
         }
     }
 }
@@ -1019,11 +1020,10 @@ impl Engine {
             return None;
         }
         let (n, p) = name_id(l, p + 1)?;
-        if self.seq_type == DNA {
-            if let Some((mis, ins, del, p1)) = misinsdel(l, p) {
+        if self.seq_type == DNA
+            && let Some((mis, ins, del, p1)) = misinsdel(l, p) {
                 return Some((n, mis, ins, del, p1));
             }
-        }
         Some((n, 0, 0, 0, p))
     }
 
@@ -1126,7 +1126,7 @@ impl Engine {
         }
         let (n, q) = num(l, p + 1)?;
         self.w32(dst, n);
-        if n >= 0 && n <= MAX_NAMES { Some(q) } else { None }
+        if (0..=MAX_NAMES).contains(&n) { Some(q) } else { None }
     }
 
     /// llim_pat(v, max, p) with v = &pu->info.llim.llim_vec,
@@ -1535,11 +1535,6 @@ impl Engine {
     // ------------------------------------------------------------------
     // matcher
 
-
-
-    /// ExMatches(RuleSet, C1, C2)
-
-
     /// The first `n` bytes of loose_match's first operand as a slice, when
     /// they all lie in one buffer.
     #[inline(always)]
@@ -1774,11 +1769,10 @@ impl Engine {
     /// followed, and the checked version takes over if one is outside.
     #[inline(always)]
     fn next_punit<P: Pol>(m: M, pu: i64) -> i64 {
-        if !P::CHECKED {
-            if let Some(n) = Self::next_punit_fast(m, pu) {
+        if !P::CHECKED
+            && let Some(n) = Self::next_punit_fast(m, pu) {
                 return n;
             }
-        }
         let n = m.r64(pu + O_NXT);
         if n != 0 {
             return n;
@@ -2289,7 +2283,7 @@ impl Engine {
                         // revhits[MAX_PUNITS] overflows into the stack guard
                         abort();
                     }
-                    return Out::Done(n as i32);
+                    Out::Done(n as i32)
                 }
     }
 
@@ -2327,7 +2321,7 @@ impl Engine {
             sr += 1;
         }
         if sr > last {
-            return (0, 0);
+            (0, 0)
         } else {
             s64!(O_HIT, sr);
             if sr < last {
@@ -2336,7 +2330,7 @@ impl Engine {
         }
             }
             sr += 1;
-            return (sr, if pushed { 2 } else { 1 });
+            (sr, if pushed { 2 } else { 1 })
         }
     }
 
@@ -2372,9 +2366,9 @@ impl Engine {
         }
         if ln < g32!(O_LLIM_BOUND) {
             s64!(O_HIT, sr);
-            return (sr, if pushed { 2 } else { 1 });
+            (sr, if pushed { 2 } else { 1 })
         } else {
-            return (0, 0);
+            (0, 0)
         }
     }
 
@@ -2404,7 +2398,7 @@ impl Engine {
         let ln = m.pu_r32::<P>(pu1, O_MLEN);
         if ln == 0 {
             s64!(O_HIT, sr);
-            return (sr, if pushed { 2 } else { 1 });
+            (sr, if pushed { 2 } else { 1 })
         } else {
             let (ins, del, mis) = (g32!(O_U0), g32!(O_U4), g32!(O_U8));
             let i = self.loose_match(One::Mem(p1), ln, sr, (er + 1 - sr) as i32, ins, del, mis, -1, false);
@@ -2412,9 +2406,9 @@ impl Engine {
                 let i = i - 1;
                 s64!(O_HIT, sr);
                 sr += i as i64;
-                return (sr, if pushed { 2 } else { 1 });
+                (sr, if pushed { 2 } else { 1 })
             } else {
-                return (0, 0);
+                (0, 0)
             }
         }
     }
@@ -2445,7 +2439,7 @@ impl Engine {
         let ln = m.pu_r32::<P>(pu1, O_MLEN);
         if ln == 0 {
             s64!(O_HIT, sr);
-            return (sr, if pushed { 2 } else { 1 });
+            (sr, if pushed { 2 } else { 1 })
         } else {
             let n = ln.max(0) as usize;
             // C uses char scratch[4000] and mallocs only above that
@@ -2466,9 +2460,9 @@ impl Engine {
                 let i = i - 1;
                 s64!(O_HIT, sr);
                 sr += i as i64;
-                return (sr, if pushed { 2 } else { 1 });
+                (sr, if pushed { 2 } else { 1 })
             } else {
-                return (0, 0);
+                (0, 0)
             }
         }
     }
@@ -2521,9 +2515,9 @@ impl Engine {
             sr += 1;
         }
         if found {
-            return (sr, if pushed { 2 } else { 1 });
+            (sr, if pushed { 2 } else { 1 })
         } else {
-            return (0, 0);
+            (0, 0)
         }
     }
 
@@ -2641,7 +2635,7 @@ impl Engine {
             sr += 1;
         }
         if sr > last {
-            return (0, 0);
+            (0, 0)
         } else {
             s64!(O_HIT, sr);
             if sr < last {
@@ -2650,7 +2644,7 @@ impl Engine {
         }
             }
             sr += g32!(O_U0) as i64;
-            return (sr, if pushed { 2 } else { 1 });
+            (sr, if pushed { 2 } else { 1 })
         }
     }
 

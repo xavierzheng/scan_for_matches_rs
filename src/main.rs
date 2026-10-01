@@ -145,9 +145,9 @@ struct Printer {
 }
 
 impl Printer {
-    /// Print one hit the way the C code does:
-    ///   >id:[a,b]
-    ///   seg1 seg2 ... segN \n
+    /// Print one hit the way the C code does: `>id:[a,b]` on one line,
+    /// then every matched piece followed by a space, then a newline.
+    #[allow(clippy::too_many_arguments, clippy::explicit_counter_loop)]
     fn hit(&mut self, id: &[u8], a: i64, b: i64, hits: &[i64], n: usize, data: &Buf, cdata: i64) {
         self.line.clear();
         self.line.push(b'>');
@@ -352,7 +352,7 @@ fn real_main() {
         data.v[body.len()] = 0;
         let ln = body.iter().position(|&b| b == 0).unwrap_or(body.len());
 
-        if ignore.iter().any(|x| *x == id) {
+        if ignore.contains(&id) {
             continue;
         }
 
