@@ -11,9 +11,9 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
-C_BIN, R_BIN = sys.argv[1], sys.argv[2]
-N = int(sys.argv[3]) if len(sys.argv) > 3 else 2000
-SEED = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+C_BIN, R_BIN = None, None
+N = 2000
+SEED = 1
 TIMEOUT = 10
 
 DNA_SEQ = "acgtACGTuU"
@@ -258,6 +258,10 @@ def one(case):
 
 
 def main():
+    global C_BIN, R_BIN, N, SEED
+    C_BIN, R_BIN = sys.argv[1], sys.argv[2]
+    N = int(sys.argv[3]) if len(sys.argv) > 3 else 2000
+    SEED = int(sys.argv[4]) if len(sys.argv) > 4 else 1
     stats = {}
     bad = []
     hits = 0

@@ -6,16 +6,23 @@
 //! units, 600 code bytes, 10500 weights) and its state in globals.  When a
 //! pattern is too big for these arrays the C code silently writes past them
 //! into the neighbouring arrays, which changes its results.  To give the same
-//! results in those cases too, all of that state lives here in one byte
-//! array laid out exactly like the static data of the reference build
-//! (`gcc -std=gnu89 -O2` with Apple clang on macOS).  Pointers are stored in
-//! it as 8-byte addresses, so overlapping writes behave as they do in C.
+//! results in those cases too, all of that state lives in one memory block
+//! laid out exactly like the static data of the reference build
+//! (`gcc -std=gnu89 -O2`, Apple clang, macOS arm64).  Pointers are stored
+//! in it as 8-byte addresses, so overlapping writes behave as they do in C.
 //!
-//! Address map (same numbers as the reference binary):
-//!   0x1_0000_c000 .. 0x1_0002_8000   __DATA segment (globals, pu_s, cv, iv)
-//!   0x1_0002_8000 .. 0x1_0002_c000   __LINKEDIT (read only)
-//!   CDATA_BASE ..                    the coded sequence buffer (malloc)
-//!   HEAP_BASE ..                     malloc(16) blocks for rule sets
+//! Memory used by the emulated program:
+//!   * the static block (globals, pu_s, cv, iv; reference addresses
+//!     0x1_0000_c000..0x1_0002_8000) followed by a read-only __LINKEDIT
+//!     page.  It is mapped 16 KiB aligned, so pointer bits that C exposes
+//!     stay the same (higher bits are random in C too).
+//!   * the coded sequence buffer (C: `cdata`), with the slack before it and
+//!     the low 24 address bits of the reference runs.
+//!   * malloc(16) blocks for rule sets.
+//! Emulated addresses are host addresses, so a checked pointer is used
+//! directly.  Every access is range checked unless the pointer was checked
+//! before (see `Pol`); an access outside these blocks ends the program the
+//! way the C program ends (SIGSEGV / SIGBUS).
 
 use crate::sys::{abort, sigbus, segv};
 
@@ -33,10 +40,16 @@ const LOW_SLACK: i64 = 1_671_168;
 const MAX_NAMES: i32 = 50;
 
 // ---- address map ---------------------------------------------------------
-const S_BASE: i64 = 0x1_0000_c000;
-const S_END: i64 = 0x1_0002_8000;
-const LINKEDIT_END: i64 = 0x1_0002_c000;
-const S_LEN: usize = (S_END - S_BASE) as usize;
+// Addresses of the reference binary (unslid).  The emulated static block is
+// placed at a host address with the same low 14 bits (16 KiB alignment), so
+// pointer bytes that the C program can observe stay the same; the higher
+// bits differ from run to run in C as well (address-space randomisation).
+const REF_S: i64 = 0x1_0000_c000;
+const REF_S_END: i64 = 0x1_0002_8000;
+const S_LEN: usize = (REF_S_END - REF_S) as usize;
+/// __LINKEDIT (read only) follows the static block
+const LINKEDIT_LEN: usize = 0x4000;
+const PAGE: usize = 0x4000;
 
 const A_KNOWN_CHAR: i64 = 0x1_0000_c000;
 const A_KNOWN_CHAR_INDEX: i64 = 0x1_0000_c010;
@@ -53,10 +66,20 @@ const A_PU_S: i64 = 0x1_0000_c798;
 const A_CV: i64 = 0x1_0001_2eb8;
 const A_IV: i64 = 0x1_0001_3110;
 
-pub const CDATA_BASE: i64 = 0x3_1040_8000; // low 24 bits as in the reference run
-const HEAP_BASE: i64 = 0x6000_0000_0000;
+/// In the reference runs the coded sequence buffer starts at an address
+/// whose low 24 bits are these; the emulated one does too.
+const CDATA_LOW_BITS: i64 = 0x40_8000;
 /// at most one 16-byte block per rule set r0..r50
 const HEAP_CAP: usize = 16 * 64;
+
+/// host address of the emulated static block (set once at start-up)
+static SB: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// Host address of a C static object given its reference address.
+#[inline(always)]
+fn sa(a: i64) -> i64 {
+    SB.load(std::sync::atomic::Ordering::Relaxed) + (a - REF_S)
+}
 
 // ---- struct punit layout (sizeof = 264) -----------------------------------
 const SZ: i64 = 264;
@@ -168,8 +191,8 @@ fn hw64(p: *mut u8, off: i64, v: i64) {
 
 /// Does a whole `struct punit` at `p` lie inside the static block?
 #[inline(always)]
-fn pu_ok(p: i64) -> bool {
-    (p.wrapping_sub(S_BASE) as u64) <= (S_LEN as i64 - SZ) as u64
+fn pu_ok_at(sb: i64, p: i64) -> bool {
+    (p.wrapping_sub(sb) as u64) <= (S_LEN as i64 - SZ) as u64
 }
 
 /// How the fast matcher stopped.
@@ -190,46 +213,41 @@ struct SlowMem {
 
 #[inline(always)]
 fn rb_full(sm: &SlowMem, a: i64) -> u8 {
-    let o = a.wrapping_sub(CDATA_BASE) as u64;
-    if o < ALLOC_LEN as u64 {
-        return unsafe { *sm.cd.add(o as usize) };
+    let o = a.wrapping_sub(sm.cd as i64);
+    if (-LOW_SLACK..ALLOC_LEN).contains(&o) {
+        // the bytes before the buffer are zero in our allocation
+        return unsafe { *(a as *const u8) };
     }
-    let o = a.wrapping_sub(S_BASE) as u64;
-    if o < S_LEN as u64 {
-        return unsafe { *sm.s.add(o as usize) };
+    let o = a.wrapping_sub(sm.s as i64) as u64;
+    if o < (S_LEN + LINKEDIT_LEN) as u64 {
+        // __LINKEDIT reads as zero here
+        return unsafe { *(a as *const u8) };
     }
-    let o = a.wrapping_sub(CDATA_BASE);
-    if (-LOW_SLACK..0).contains(&o) {
-        return 0;
-    }
-    if (S_END..LINKEDIT_END).contains(&a) {
-        return 0;
-    }
-    let o = a.wrapping_sub(HEAP_BASE);
+    let o = a.wrapping_sub(sm.heap as i64);
     if o >= 0 && (o as usize) < sm.heap_len {
-        return unsafe { *sm.heap.add(o as usize) };
+        return unsafe { *(a as *const u8) };
     }
     segv()
 }
 
 #[inline(always)]
 fn wb_full(sm: &SlowMem, a: i64, v: u8) {
-    let o = a.wrapping_sub(S_BASE) as u64;
+    let o = a.wrapping_sub(sm.s as i64) as u64;
     if o < S_LEN as u64 {
-        unsafe { *sm.s.add(o as usize) = v };
+        unsafe { *(a as *mut u8) = v };
         return;
     }
-    if (S_END..LINKEDIT_END).contains(&a) {
+    if o < (S_LEN + LINKEDIT_LEN) as u64 {
         sigbus(); // read-only segment
     }
-    let o = a.wrapping_sub(HEAP_BASE);
+    let o = a.wrapping_sub(sm.heap as i64);
     if o >= 0 && (o as usize) < sm.heap_len {
-        unsafe { *sm.heap.add(o as usize) = v };
+        unsafe { *(a as *mut u8) = v };
         return;
     }
-    let o = a.wrapping_sub(CDATA_BASE) as u64;
+    let o = a.wrapping_sub(sm.cd as i64) as u64;
     if o < ALLOC_LEN as u64 {
-        unsafe { *sm.cd.add(o as usize) = v };
+        unsafe { *(a as *mut u8) = v };
         return;
     }
     segv()
@@ -288,22 +306,22 @@ struct M {
 impl M {
     #[inline(always)]
     fn rb(self, a: i64) -> u8 {
-        let o = a.wrapping_sub(CDATA_BASE) as u64;
+        let o = a.wrapping_sub(self.cd as i64) as u64;
         if o < ALLOC_LEN as u64 {
-            return unsafe { *self.cd.add(o as usize) };
+            return unsafe { *(a as *const u8) };
         }
-        let o = a.wrapping_sub(S_BASE) as u64;
+        let o = a.wrapping_sub(self.s as i64) as u64;
         if o < S_LEN as u64 {
-            return unsafe { *self.s.add(o as usize) };
+            return unsafe { *(a as *const u8) };
         }
         rb_slow(self.sm, a)
     }
 
     #[inline(always)]
     fn wb(self, a: i64, v: u8) {
-        let o = a.wrapping_sub(S_BASE) as u64;
+        let o = a.wrapping_sub(self.s as i64) as u64;
         if o < S_LEN as u64 {
-            unsafe { *self.s.add(o as usize) = v };
+            unsafe { *(a as *mut u8) = v };
             return;
         }
         wb_slow(self.sm, a, v)
@@ -311,27 +329,27 @@ impl M {
 
     #[inline(always)]
     fn r32(self, a: i64) -> i32 {
-        let o = a.wrapping_sub(S_BASE) as u64;
+        let o = a.wrapping_sub(self.s as i64) as u64;
         if o + 4 <= S_LEN as u64 {
-            return unsafe { (self.s.add(o as usize) as *const i32).read_unaligned() };
+            return unsafe { (a as *const i32).read_unaligned() };
         }
         r32_slow(self.sm, a)
     }
 
     #[inline(always)]
     fn r64(self, a: i64) -> i64 {
-        let o = a.wrapping_sub(S_BASE) as u64;
+        let o = a.wrapping_sub(self.s as i64) as u64;
         if o + 8 <= S_LEN as u64 {
-            return unsafe { (self.s.add(o as usize) as *const i64).read_unaligned() };
+            return unsafe { (a as *const i64).read_unaligned() };
         }
         r64_slow(self.sm, a)
     }
 
     #[inline(always)]
     fn w32(self, a: i64, v: i32) {
-        let o = a.wrapping_sub(S_BASE) as u64;
+        let o = a.wrapping_sub(self.s as i64) as u64;
         if o + 4 <= S_LEN as u64 {
-            unsafe { (self.s.add(o as usize) as *mut i32).write_unaligned(v) };
+            unsafe { (a as *mut i32).write_unaligned(v) };
             return;
         }
         wn_slow(self.sm, a, v as u32 as u64, 4);
@@ -339,9 +357,9 @@ impl M {
 
     #[inline(always)]
     fn w64(self, a: i64, v: i64) {
-        let o = a.wrapping_sub(S_BASE) as u64;
+        let o = a.wrapping_sub(self.s as i64) as u64;
         if o + 8 <= S_LEN as u64 {
-            unsafe { (self.s.add(o as usize) as *mut i64).write_unaligned(v) };
+            unsafe { (a as *mut i64).write_unaligned(v) };
             return;
         }
         wn_slow(self.sm, a, v as u64, 8);
@@ -352,7 +370,7 @@ impl M {
         if P::CHECKED {
             self.r32(a)
         } else {
-            unsafe { (self.s.add(a.wrapping_sub(S_BASE) as usize) as *const i32).read_unaligned() }
+            unsafe { (a as *const i32).read_unaligned() }
         }
     }
 
@@ -361,21 +379,26 @@ impl M {
         if P::CHECKED {
             self.r64(a)
         } else {
-            unsafe { (self.s.add(a.wrapping_sub(S_BASE) as usize) as *const i64).read_unaligned() }
+            unsafe { (a as *const i64).read_unaligned() }
         }
     }
 
-    /// Host pointer to the unit at `pu` (only valid when pu_ok(pu)).
+    /// Host pointer to the unit at `pu` (only valid when m.pu_ok(pu)).
     #[inline(always)]
     fn up(self, pu: i64) -> *mut u8 {
-        unsafe { self.s.add(pu.wrapping_sub(S_BASE) as usize) }
+        pu as *mut u8
+    }
+
+    #[inline(always)]
+    fn pu_ok(self, p: i64) -> bool {
+        pu_ok_at(self.s as i64, p)
     }
 
     /// names[i] (static slot unless `i` is out of range)
     #[inline(always)]
     fn names_p<P: Pol>(self, i: i32) -> i64 {
         if !P::CHECKED && (0..=MAX_NAMES).contains(&i) {
-            self.pr64::<Fast>(A_NAMES + 8 * i as i64)
+            self.pr64::<Fast>(sa(A_NAMES) + 8 * i as i64)
         } else {
             self.names(i)
         }
@@ -384,24 +407,24 @@ impl M {
     /// a field of a unit reached through a pointer that has not been checked
     #[inline(always)]
     fn pu_r64<P: Pol>(self, pu: i64, off: i64) -> i64 {
-        if !P::CHECKED && pu_ok(pu) { self.pr64::<Fast>(pu + off) } else { self.r64(pu + off) }
+        if !P::CHECKED && self.pu_ok(pu) { self.pr64::<Fast>(pu + off) } else { self.r64(pu + off) }
     }
 
     #[inline(always)]
     fn pu_r32<P: Pol>(self, pu: i64, off: i64) -> i32 {
-        if !P::CHECKED && pu_ok(pu) { self.pr32::<Fast>(pu + off) } else { self.r32(pu + off) }
+        if !P::CHECKED && self.pu_ok(pu) { self.pr32::<Fast>(pu + off) } else { self.r32(pu + off) }
     }
 
     /// Are the `n` bytes from `a` inside the coded sequence buffer?
     #[inline(always)]
-    fn cd_ok(a: i64, n: i64) -> bool {
-        let o = a.wrapping_sub(CDATA_BASE);
+    fn cd_ok(self, a: i64, n: i64) -> bool {
+        let o = a.wrapping_sub(self.cd as i64);
         o >= 0 && n >= 0 && o.wrapping_add(n) <= ALLOC_LEN
     }
 
     #[inline(always)]
     fn names(self, i: i32) -> i64 {
-        self.r64(A_NAMES + 8 * i as i64)
+        self.r64(sa(A_NAMES) + 8 * i as i64)
     }
 
     /// KnownChar(C)
@@ -427,7 +450,7 @@ impl M {
         if rule_set == -1 {
             self.matches(c1, c2)
         } else {
-            let base = self.r64(A_RULE_SETS + 8 * rule_set as i64);
+            let base = self.r64(sa(A_RULE_SETS) + 8 * rule_set as i64);
             let idx = c2 as i64 + KNOWN_CHAR_INDEX[(c1 & 15) as usize] as i64;
             self.rb(base + idx) != 0
         }
@@ -654,8 +677,6 @@ enum One<'a> {
 }
 
 pub struct Engine {
-    /// static data of the C program (accessed through `mem`)
-    _s: Vec<u8>,
     /// malloc'd rule-set blocks (accessed through `mem`)
     _heap: Vec<u8>,
     slow: Box<SlowMem>,
@@ -678,33 +699,55 @@ pub struct Engine {
 
 impl Engine {
     pub fn new() -> Engine {
-        let mut s = vec![0u8; S_LEN];
+        // static block + __LINKEDIT, 16 KiB aligned like the C segment and,
+        // if possible, at an address of the same form (0x1_xxxx_c000)
+        let s_ptr = crate::sys::map_zeroed(0x1_00f0_0000, S_LEN + LINKEDIT_LEN + 2 * PAGE);
+        let s_ptr = {
+            let a = s_ptr as usize;
+            unsafe { s_ptr.add((PAGE - a % PAGE) % PAGE) }
+        };
+        SB.store(s_ptr as i64, std::sync::atomic::Ordering::Relaxed);
         let mut heap = vec![0u8; HEAP_CAP];
-        let mut cdata = Buf::new();
-        let slow = Box::new(SlowMem { s: s.as_mut_ptr(), cd: cdata.v.as_mut_ptr(), heap: heap.as_mut_ptr(), heap_len: 0 });
+        // sequence buffer: LOW_SLACK zero bytes before it, and a start
+        // address with the same low 24 bits as in the reference runs
+        let mut cdata = Buf { v: vec![0u8; LOW_SLACK as usize + ALLOC_LEN as usize + (1 << 24)] };
+        let cd_ptr = {
+            let p = cdata.v.as_mut_ptr();
+            let lo = p as i64 + LOW_SLACK;
+            let mut c = (lo & !0xFF_FFFF) | CDATA_LOW_BITS;
+            if c < lo {
+                c += 1 << 24;
+            }
+            unsafe { p.add((c - p as i64) as usize) }
+        };
+        let slow = Box::new(SlowMem { s: s_ptr, cd: cd_ptr, heap: heap.as_mut_ptr(), heap_len: 0 });
         let mem = M { s: slow.s, cd: slow.cd, sm: &*slow as *const SlowMem, pep: false };
         let mut e = Engine {
-            _s: s,
             _heap: heap,
             slow,
             _cdata: cdata,
             mem,
             seq_type: 0,
-            pup: A_PU_S,
-            cvp: A_CV,
-            ivp: A_IV,
+            pup: sa(A_PU_S),
+            cvp: sa(A_CV),
+            ivp: sa(A_IV),
             br1: 0,
             end_srch: 0,
             revhits: Vec::with_capacity(256),
             p2c_lo: [0; 128],
         };
         for (i, v) in KNOWN_CHAR.iter().enumerate() {
-            e.wb(A_KNOWN_CHAR + i as i64, *v);
+            e.wb(sa(A_KNOWN_CHAR) + i as i64, *v);
         }
         for (i, v) in KNOWN_CHAR_INDEX.iter().enumerate() {
-            e.wb(A_KNOWN_CHAR_INDEX + i as i64, *v as u8);
+            e.wb(sa(A_KNOWN_CHAR_INDEX) + i as i64, *v as u8);
         }
         e
+    }
+
+    /// Address of cdata[0] (C: the `cdata` pointer).
+    pub fn cdata_base(&self) -> i64 {
+        self.mem.cd as i64
     }
 
     // ------------------------------------------------------------------
@@ -741,7 +784,7 @@ impl Engine {
     }
 
     fn malloc16(&mut self) -> i64 {
-        let a = HEAP_BASE + self.slow.heap_len as i64;
+        let a = self.slow.heap as i64 + self.slow.heap_len as i64;
         self.slow.heap_len += 16;
         a
     }
@@ -754,12 +797,12 @@ impl Engine {
 
     #[inline(always)]
     fn past_last(&self) -> i64 {
-        self.r64(A_PAST_LAST)
+        self.r64(sa(A_PAST_LAST))
     }
 
     #[inline(always)]
     fn start_srch(&self) -> i64 {
-        self.r64(A_START_SRCH)
+        self.r64(sa(A_START_SRCH))
     }
 
     /// punit_to_code[c] where C subscripts with a signed char.
@@ -768,7 +811,7 @@ impl Engine {
         if c < 0x80 {
             self.p2c_lo[c as usize]
         } else {
-            self.rb(A_P2C + (c as i8) as i64)
+            self.rb(sa(A_P2C) + (c as i8) as i64)
         }
     }
 
@@ -806,7 +849,7 @@ impl Engine {
             if v & T_BIT != 0 {
                 v |= A_BIT << 4;
             }
-            self.wb(A_P2C + the_char, v);
+            self.wb(sa(A_P2C) + the_char, v);
             if the_char < 128 {
                 self.p2c_lo[the_char as usize] = v;
             }
@@ -831,10 +874,10 @@ impl Engine {
                 _ => None,
             };
             if let Some(c) = c {
-                self.wb(A_CODE_TO_PUNIT + the_char, c);
+                self.wb(sa(A_CODE_TO_PUNIT) + the_char, c);
             }
         }
-        self.w32(A_INITIALIZED, 1);
+        self.w32(sa(A_INITIALIZED), 1);
     }
 
     /// comp_data(data, cdata): translate characters to codes, stop at NUL.
@@ -1198,7 +1241,7 @@ impl Engine {
         if at(l, p) != b'}' {
             return None;
         }
-        let slot = A_RULE_SETS + 8 * n as i64;
+        let slot = sa(A_RULE_SETS) + 8 * n as i64;
         if self.r64(slot) == 0 {
             let a = self.malloc16();
             self.w64(slot, a);
@@ -1229,7 +1272,7 @@ impl Engine {
         let pu1 = self.pup;
         self.pup += SZ;
         if let Some((i, p1)) = name_assgn(l, p) {
-            let slot = A_NAMES + 8 * i as i64;
+            let slot = sa(A_NAMES) + 8 * i as i64;
             if self.r64(slot) != 0 {
                 return None; // the slot is not released, as in C
             }
@@ -1461,30 +1504,30 @@ impl Engine {
     pub fn parse_cmd(&mut self, line: &[u8], seq_type: i32) -> i32 {
         self.seq_type = seq_type;
         self.mem.pep = seq_type == PEPTIDE;
-        self.w32(A_SEQ_TYPE, seq_type);
-        if self.r32(A_INITIALIZED) == 0 {
+        self.w32(sa(A_SEQ_TYPE), seq_type);
+        if self.r32(sa(A_INITIALIZED)) == 0 {
             self.build_conversion_tables();
         }
         for i in 0..MAX_NAMES as i64 {
-            self.w64(A_NAMES + 8 * i, 0);
+            self.w64(sa(A_NAMES) + 8 * i, 0);
         }
-        self.ivp = A_IV;
-        self.cvp = A_CV;
-        self.pup = A_PU_S;
-        self.w64(A_AD_PU_S, A_PU_S);
+        self.ivp = sa(A_IV);
+        self.cvp = sa(A_CV);
+        self.pup = sa(A_PU_S);
+        self.w64(sa(A_AD_PU_S), sa(A_PU_S));
         if line.len() >= 1_000_000 {
-            self.w64(A_AD_PU_S, 0);
+            self.w64(sa(A_AD_PU_S), 0);
             return 0;
         }
         match self.parser(line) {
             None => {
-                self.w64(A_AD_PU_S, 0);
+                self.w64(sa(A_AD_PU_S), 0);
                 0
             }
             Some(_) => {
-                self.set_anchors(A_PU_S, 0);
-                self.w64(A_AD_PU_S, A_PU_S);
-                self.max_mats(A_PU_S)
+                self.set_anchors(sa(A_PU_S), 0);
+                self.w64(sa(A_AD_PU_S), sa(A_PU_S));
+                self.max_mats(sa(A_PU_S))
             }
         }
     }
@@ -1511,12 +1554,12 @@ impl Engine {
                 }
             }
             One::Mem(base) => {
-                if M::cd_ok(*base, n as i64) {
-                    Some(unsafe { std::slice::from_raw_parts(m.cd.add(base.wrapping_sub(CDATA_BASE) as usize), n) })
+                if m.cd_ok(*base, n as i64) {
+                    Some(unsafe { std::slice::from_raw_parts(*base as *const u8, n) })
                 } else {
-                    let o = base.wrapping_sub(S_BASE);
+                    let o = base.wrapping_sub(m.s as i64);
                     if o >= 0 && (o as usize) + n <= S_LEN {
-                        Some(unsafe { std::slice::from_raw_parts(m.s.add(o as usize), n) })
+                        Some(unsafe { std::slice::from_raw_parts(*base as *const u8, n) })
                     } else {
                         None
                     }
@@ -1579,10 +1622,10 @@ impl Engine {
             }
             // same loop on plain slices when every byte it may read is in
             // a known buffer
-            if one_len >= 1 && M::cd_ok(two_start, one_len as i64) {
+            if one_len >= 1 && m.cd_ok(two_start, one_len as i64) {
                 let n = one_len as usize;
                 if let Some(ob) = self.one_slice(&one_src, n) {
-                    let tb = unsafe { std::slice::from_raw_parts(m.cd.add(two_start.wrapping_sub(CDATA_BASE) as usize), n) };
+                    let tb = unsafe { std::slice::from_raw_parts(two_start as *const u8, n) };
                     for k in 0..n {
                         let t = tb[k];
                         if !m.known_char(t & 15)
@@ -1766,7 +1809,7 @@ impl Engine {
         let mut pu1 = pu;
         let mut pu2 = hr64(m.up(pu1), O_PREV);
         while pu2 != 0 {
-            if !pu_ok(pu2) {
+            if !m.pu_ok(pu2) {
                 return None;
             }
             let n = hr64(m.up(pu2), O_NXT);
@@ -1806,7 +1849,7 @@ impl Engine {
         let mut last: i64 = 0;
         let mut pu = pu;
         while pu != 0 {
-            if !pu_ok(pu) {
+            if !m.pu_ok(pu) {
                 return false;
             }
             let up = m.up(pu);
@@ -1827,7 +1870,7 @@ impl Engine {
             } else if hr64(up, O_NXT) == last {
                 pu = if hr32(up, O_U24) == 1 { hr64(up, O_U0) } else { hr64(up, O_U8) };
                 loop {
-                    if !pu_ok(pu) {
+                    if !m.pu_ok(pu) {
                         return false;
                     }
                     let nx = hr64(m.up(pu), O_NXT);
@@ -1958,7 +2001,7 @@ impl Engine {
                 // TRY
                 'tryl: loop {
                     if !P::CHECKED {
-                        if !pu_ok(cr) {
+                        if !m.pu_ok(cr) {
                             return Out::Bail { back: false, cr, sr, br };
                         }
                         cp = m.up(cr);
@@ -2019,19 +2062,43 @@ impl Engine {
                         }
                     }
                     EXACT_PUNIT => {
-                        let (n, c) = self.t_exact::<P>(cr, sr, er);
-                        if c == 0 {
+                        let len = g32!(O_U0);
+                        let mut last = er + 1 - len as i64;
+                        if last > sr && g32!(O_ANCH) != 0 {
+                            last = sr;
+                        }
+                        let p1 = g64!(O_U8);
+                        let ln = len.wrapping_sub(1);
+                        let c0 = m.rb(p1);
+                        while sr <= last {
+                            if m.matches(m.rb(sr), c0) {
+                                let mut p2 = sr + 1;
+                                let mut p3 = p1 + 1;
+                                let mut i = ln;
+                                while i != 0 && m.matches(m.rb(p2), m.rb(p3)) {
+                                    i = i.wrapping_sub(1);
+                                    p3 += 1;
+                                    p2 += 1;
+                                }
+                                if i == 0 {
+                                    break;
+                                }
+                            }
+                            sr += 1;
+                        }
+                        if sr > last {
                             break 'tryl;
                         }
-                        if c == 2 {
+                        s64!(O_HIT, sr);
+                        if sr < last {
                             push_br!();
                         }
-                        sr = n;
+                        sr += g32!(O_U0) as i64;
                         success!('tryl, 'main);
                     }
                     COMPL_PUNIT => {
                         let pu1 = m.names_p::<P>(g32!(O_U12));
-                        let pp = if !P::CHECKED && pu_ok(pu1) { m.up(pu1) } else { std::ptr::null_mut() };
+                        let pp = if !P::CHECKED && m.pu_ok(pu1) { m.up(pu1) } else { std::ptr::null_mut() };
                         let pu1_hit = |m: M| if pp.is_null() { m.r64(pu1 + O_HIT) } else { hr64(pp, O_HIT) };
                         let p1 = pu1_hit(m);
                         let mut ln = if pp.is_null() { m.r32(pu1 + O_MLEN) } else { hr32(pp, O_MLEN) };
@@ -2052,10 +2119,10 @@ impl Engine {
                             // pu1->hit is read again, as in C (pu1 may be this unit)
                             let mut q = pu1_hit(m) + (ln as i64 - 1);
                             let mut ok = true;
-                            if !P::CHECKED && !m.pep && ln > 0 && M::cd_ok(q - (ln as i64 - 1), ln as i64) && M::cd_ok(sr, ln as i64) {
+                            if !P::CHECKED && !m.pep && ln > 0 && m.cd_ok(q - (ln as i64 - 1), ln as i64) && m.cd_ok(sr, ln as i64) {
                                 // all reads are inside the sequence buffer
-                                let qp = m.cd.wrapping_add(q.wrapping_sub(CDATA_BASE) as usize);
-                                let sp = m.cd.wrapping_add(sr.wrapping_sub(CDATA_BASE) as usize);
+                                let qp = q as *const u8;
+                                let sp = sr as *const u8;
                                 let n = ln as usize;
                                 let mut k = 0usize;
                                 while k < n {
@@ -2153,7 +2220,7 @@ impl Engine {
                         return Out::Done(0);
                     }
                     if !P::CHECKED {
-                        if !pu_ok(br) {
+                        if !m.pu_ok(br) {
                             return Out::Bail { back: true, cr, sr, br };
                         }
                         cp = m.up(br);
@@ -2308,64 +2375,6 @@ impl Engine {
             return (sr, if pushed { 2 } else { 1 });
         } else {
             return (0, 0);
-        }
-    }
-
-    #[inline(never)]
-    #[allow(unused_macros, unused_mut, unused_variables)]
-    fn t_exact<P: Pol>(&self, cr: i64, mut sr: i64, er: i64) -> (i64, u8) {
-        let m = self.mem;
-        let mut pushed = false;
-        let cp = m.up(cr);
-        macro_rules! g32 {
-            ($o:expr) => {
-                if P::CHECKED { m.r32(cr + $o) } else { hr32(cp, $o) }
-            };
-        }
-        macro_rules! g64 {
-            ($o:expr) => {
-                if P::CHECKED { m.r64(cr + $o) } else { hr64(cp, $o) }
-            };
-        }
-        macro_rules! s64 {
-            ($o:expr, $v:expr) => {
-                if P::CHECKED { m.w64(cr + $o, $v) } else { hw64(cp, $o, $v) }
-            };
-        }
-        let len = g32!(O_U0);
-        let mut last = er + 1 - len as i64;
-        if last > sr && g32!(O_ANCH) != 0 {
-            last = sr;
-        }
-        let p1 = g64!(O_U8);
-        let ln = len.wrapping_sub(1);
-        while sr <= last {
-            if m.matches(m.rb(sr), m.rb(p1)) {
-                let mut p2 = sr + 1;
-                let mut p3 = p1 + 1;
-                let mut i = ln;
-                while i != 0 && m.matches(m.rb(p2), m.rb(p3)) {
-                    i = i.wrapping_sub(1);
-                    p3 += 1;
-                    p2 += 1;
-                }
-                if i == 0 {
-                    break;
-                }
-            }
-            sr += 1;
-        }
-        if sr > last {
-            return (0, 0);
-        } else {
-            s64!(O_HIT, sr);
-            if sr < last {
-                {
-            pushed = true;
-        }
-            }
-            sr += g32!(O_U0) as i64;
-            return (sr, if pushed { 2 } else { 1 });
         }
     }
 
@@ -2647,24 +2656,24 @@ impl Engine {
 
     pub fn first_match(&mut self, len: i32, hits: &mut Vec<i64>) -> i32 {
         let m = self.mem;
-        let start = CDATA_BASE;
-        m.w64(A_START_SRCH, start);
+        let start = m.cd as i64;
+        m.w64(sa(A_START_SRCH), start);
         self.end_srch = start + (len as i64 - 1);
         self.br1 = 0;
-        let pu = m.r64(A_AD_PU_S);
+        let pu = m.r64(sa(A_AD_PU_S));
         let i = self.pattern_match(pu, start, self.end_srch, hits, true);
         let v = hits[i as usize];
-        m.w64(A_PAST_LAST, v);
+        m.w64(sa(A_PAST_LAST), v);
         i
     }
 
     pub fn next_match(&mut self, hits: &mut Vec<i64>) -> i32 {
         let m = self.mem;
-        let pu = m.r64(A_AD_PU_S);
+        let pu = m.r64(sa(A_AD_PU_S));
         let (s, e) = (self.start_srch(), self.end_srch);
         let i = self.pattern_match(pu, s, e, hits, false);
         let v = hits[i as usize];
-        m.w64(A_PAST_LAST, v);
+        m.w64(sa(A_PAST_LAST), v);
         i
     }
 
@@ -2679,7 +2688,7 @@ impl Engine {
             }
         }
         let v = hits[i as usize];
-        m.w64(A_PAST_LAST, v);
+        m.w64(sa(A_PAST_LAST), v);
         i
     }
 }

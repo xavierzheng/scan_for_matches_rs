@@ -17,6 +17,7 @@ unsafe extern "C" {
     fn fwrite(p: *const c_void, size: usize, n: usize, f: *mut c_void) -> usize;
     fn signal(sig: c_int, handler: usize) -> usize;
     fn raise(sig: c_int) -> c_int;
+    fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
 }
 
 const SIGSEGV: c_int = 11;
@@ -132,4 +133,20 @@ impl Out {
             }
         }
     }
+}
+
+/// Zeroed read/write memory, placed at `hint` if that range is free (the
+/// kernel picks another place otherwise).  Never unmapped.
+pub fn map_zeroed(hint: usize, len: usize) -> *mut u8 {
+    #[cfg(target_os = "macos")]
+    const MAP_ANON: c_int = 0x1000;
+    #[cfg(not(target_os = "macos"))]
+    const MAP_ANON: c_int = 0x20;
+    const MAP_PRIVATE: c_int = 0x2;
+    const PROT_RW: c_int = 0x1 | 0x2;
+    let p = unsafe { mmap(hint as *mut c_void, len, PROT_RW, MAP_PRIVATE | MAP_ANON, -1, 0) };
+    if p as isize == -1 {
+        std::process::abort();
+    }
+    p as *mut u8
 }
