@@ -1,0 +1,12 @@
+[package]
+name = "scan_for_matches"
+version = "1.0.0"
+edition = "2024"
+description = "Rust port of scan_for_matches (Ross Overbeek): scan nucleotide or protein sequences for matching patterns"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
