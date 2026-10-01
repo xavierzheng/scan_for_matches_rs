@@ -2,6 +2,12 @@
 
 ## Unreleased (0.2.0)
 
+- `-t N`: records are searched by N threads; output is written in input
+  order and is identical to one thread, including `-m`, `-n`, `-i` and
+  read errors.  Patterns that use matches of earlier sequences run on one
+  thread.  B. napus CDS (120 351 records): 42.8 s with 1 thread, 9.2 s
+  with 8.
+
 - The matching engine has no global state any more: several engines can
   run at the same time in different threads.  Patterns that read a name
   before it is certainly matched (it is defined later, or only in one

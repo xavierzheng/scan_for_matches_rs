@@ -32,7 +32,7 @@ No third-party crates are used.
 Same command line as the original:
 
 ```sh
-scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] pattern_file < fasta_input > hits
+scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] [-t N] pattern_file < fasta_input > hits
 ```
 
 | option | meaning |
@@ -43,6 +43,7 @@ scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] pattern_file 
 | `-m N` | report at most N hits |
 | `-o N` | show overlapping hits (the value is not used) |
 | `-i file` | file of sequence ids to skip |
+| `-t N` | search N records at the same time (threads); default 1.  The output is the same as with one thread |
 
 The FASTA input on stdin can be plain text or compressed with gzip or
 bgzip (for example NCBI `*.fna.gz` files); compression is detected
@@ -91,7 +92,11 @@ Only these (details in `CHANGELOG.md`):
 * `-c` with `-p` is an error (exit status 2);
 * with `-c`, a lowercase `s` is shown as `s` (the original showed `S`);
 * bytes 0x80 and above are unknown characters, like `x`;
-* (after 0.1.0) gzip / bgzip compressed FASTA input is accepted.
+* (after 0.1.0) gzip / bgzip compressed FASTA input is accepted;
+* (after 0.1.0) `-t N` searches records in parallel.  A pattern that reads
+  a name before it is certainly matched (defined later, or only in one
+  branch of `( | )`) uses matches of earlier sequences, so it is always
+  searched on one thread.
 
 Unchanged on purpose (see `TODO.md`, group C): a pattern whose longest
 match is 0 characters is a pattern error, the value of `-o` is not used, a
@@ -113,6 +118,10 @@ cargo test --release
   from the pattern language.
 * `tests/gzip_input.rs` – gzip and multi-member (bgzip) input, damaged
   input.
+* `tests/threads.rs` – `-t 2/4/8` give the same output as `-t 1`
+  (options, hit and miss limits, ignore list, damaged input, patterns
+  that use earlier sequences); `tests/fuzz_threads.py` does the same with
+  random patterns and input.
 * unit test in `src/engine.rs` – the inexact matcher against a separate
   recursive implementation of its search order (200 000 random cases).
 

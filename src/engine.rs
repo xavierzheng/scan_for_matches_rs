@@ -1583,7 +1583,6 @@ impl Engine {
     /// pattern, or only in one branch of an alternative.)  Such a unit uses
     /// the last match of the name, which can come from an earlier attempt
     /// or an earlier sequence, so the sequences are not independent.
-    #[allow(dead_code)] // used by the thread option (next step)
     pub fn uses_earlier_state(&self) -> bool {
         let root = self.r64(self.mem.sa(A_AD_PU_S));
         if root == 0 {

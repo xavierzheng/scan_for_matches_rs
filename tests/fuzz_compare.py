@@ -228,7 +228,10 @@ def run(binary, args, pat_path, inp):
     try:
         p = subprocess.run([binary] + args + [pat_path], input=inp, capture_output=True, timeout=TIMEOUT)
         # getopt prints argv[0]; the two binaries live in different places
-        return (p.returncode, p.stdout, p.stderr.replace(binary.encode(), b"PROG"))
+        err = p.stderr.replace(binary.encode(), b"PROG")
+        # options added after the C program (shown in the usage text)
+        err = err.replace(b" [-t threads]", b"")
+        return (p.returncode, p.stdout, err)
     except subprocess.TimeoutExpired:
         return ("TIMEOUT", b"", b"")
 
