@@ -8,7 +8,7 @@
 mod engine;
 mod sys;
 
-use engine::{compl, Buf, Engine, DNA, NULLP, PEPTIDE};
+use engine::{compl, Buf, Engine, CDATA_BASE, DNA, PEPTIDE};
 use std::io::Read;
 
 const MAX_PAT_LINE_LN: usize = 32000;
@@ -148,7 +148,7 @@ impl Printer {
     /// Print one hit the way the C code does:
     ///   >id:[a,b]
     ///   seg1 seg2 ... segN \n
-    fn hit(&mut self, id: &[u8], a: i64, b: i64, hits: &[isize], n: usize, data: &Buf) {
+    fn hit(&mut self, id: &[u8], a: i64, b: i64, hits: &[i64], n: usize, data: &Buf) {
         self.line.clear();
         self.line.push(b'>');
         self.line.extend_from_slice(id);
@@ -159,9 +159,17 @@ impl Printer {
             let j = (hits[i1 + 1] - hits[i1]) as i32;
             // `for (...; j; j--)` with an int counter
             let count = j as u32 as u64;
-            let mut p = hits[i1];
+            let mut p = hits[i1] - CDATA_BASE;
             for _ in 0..count {
-                self.line.push(data.get(p));
+                match data.try_get(p) {
+                    Some(b) => self.line.push(b),
+                    None => {
+                        // C faults here after printf() has buffered every
+                        // character before this one
+                        self.out.write(&self.line);
+                        sys::segv();
+                    }
+                }
                 p += 1;
                 if self.line.len() >= 1 << 16 {
                     self.out.write(&self.line);
@@ -303,8 +311,11 @@ fn real_main() {
     }
 
     let mut data = Buf::new();
-    let mut cdata = Buf::new();
-    let mut hits: Vec<isize> = vec![NULLP; 2000];
+    // `char *hits[2000]` is not initialised in C.  When the first search
+    // finds nothing, `past_last = hits[0]` copies the leftover value, which
+    // is this constant in the reference build.
+    let mut hits: Vec<i64> = vec![0; 2000];
+    hits[0] = 0x0f00_7fff_ffff_fff8;
     let mut pr = Printer { out: sys::Out::new(), line: Vec::new() };
     let mut inp = Input::new(std::io::stdin().lock());
     let mut id: Vec<u8> = Vec::new();
@@ -332,7 +343,11 @@ fn real_main() {
         let stop = inp.read_body(&mut body);
         got_gt = stop == b'>' as i32;
 
-        // copy into the persistent data buffer, NUL terminated
+        // copy into the persistent data buffer, NUL terminated; past the
+        // malloc'd block the C program faults while reading the input
+        if body.len() as i64 >= engine::ALLOC_LEN {
+            sys::segv();
+        }
         data.reserve_len(body.len() + 1);
         data.v[..body.len()].copy_from_slice(&body);
         data.v[body.len()] = 0;
@@ -343,20 +358,19 @@ fn real_main() {
         }
 
         if !protein {
-            eng.comp_data(&data, &mut cdata);
+            eng.comp_data(&data);
         } else {
-            cdata.reserve_len(ln + 1);
-            cdata.v[..ln + 1].copy_from_slice(&data.v[..ln + 1]);
+            eng.copy_data(&data);
         }
 
         let mut hit_in_line = false;
-        let mut i = eng.first_match(&cdata, ln as i32, &mut hits);
+        let mut i = eng.first_match(ln as i32, &mut hits);
         while max_hits > 0 && i > 0 {
             hit_in_line = true;
             max_hits -= 1;
             let n = i as usize;
-            pr.hit(&id, 1 + hits[0] as i64, 1 + (hits[n] - 1) as i64, &hits, n, &data);
-            i = if !show_overlaps { eng.cont_match(&cdata, &mut hits) } else { eng.next_match(&cdata, &mut hits) };
+            pr.hit(&id, 1 + hits[0] - CDATA_BASE, 1 + (hits[n] - 1 - CDATA_BASE), &hits, n, &data);
+            i = if !show_overlaps { eng.cont_match(&mut hits) } else { eng.next_match(&mut hits) };
         }
 
         if complements {
@@ -373,16 +387,16 @@ fn real_main() {
                     b -= 1;
                 }
             }
-            eng.comp_data(&data, &mut cdata);
+            eng.comp_data(&data);
 
-            let mut i = eng.first_match(&cdata, ln as i32, &mut hits);
+            let mut i = eng.first_match(ln as i32, &mut hits);
             while max_hits > 0 && i > 0 {
                 hit_in_line = true;
                 max_hits -= 1;
                 let n = i as usize;
                 let l = ln as i64;
-                pr.hit(&id, 1 + (l - 1) - hits[0] as i64, 1 + (l - 1) - (hits[n] - 1) as i64, &hits, n, &data);
-                i = eng.cont_match(&cdata, &mut hits);
+                pr.hit(&id, 1 + (l - 1) - (hits[0] - CDATA_BASE), 1 + (l - 1) - (hits[n] - 1 - CDATA_BASE), &hits, n, &data);
+                i = eng.cont_match(&mut hits);
             }
         }
 

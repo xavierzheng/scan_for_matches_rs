@@ -20,6 +20,10 @@ unsafe extern "C" {
 }
 
 const SIGSEGV: c_int = 11;
+#[cfg(target_os = "macos")]
+const SIGBUS: c_int = 10;
+#[cfg(not(target_os = "macos"))]
+const SIGBUS: c_int = 7;
 const SIG_DFL: usize = 0;
 
 /// Terminate the way the C program does when it dereferences a bad pointer.
@@ -28,6 +32,20 @@ pub fn segv() -> ! {
         signal(SIGSEGV, SIG_DFL);
         raise(SIGSEGV);
     }
+    std::process::abort()
+}
+
+/// A protection fault (write into a read-only segment).
+pub fn sigbus() -> ! {
+    unsafe {
+        signal(SIGBUS, SIG_DFL);
+        raise(SIGBUS);
+    }
+    std::process::abort()
+}
+
+/// Stack-protector failure in the C program (`__stack_chk_fail`).
+pub fn abort() -> ! {
     std::process::abort()
 }
 
