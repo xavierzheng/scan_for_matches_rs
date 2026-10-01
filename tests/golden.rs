@@ -108,9 +108,11 @@ fn check(file: &str, min_cases: usize) {
     assert!(cases.len() >= min_cases);
     let dir = std::env::temp_dir().join(format!("sfm_golden_{}_{file}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    // at most 8 workers (leave cores for other work)
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(4);
+        .unwrap_or(4)
+        .min(8);
     let chunk = cases.len().div_ceil(threads);
     let failures: Vec<String> = std::thread::scope(|s| {
         let hs: Vec<_> = cases

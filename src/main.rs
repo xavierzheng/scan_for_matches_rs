@@ -6,6 +6,7 @@
 //! reading and hit printing).  The pattern language lives in engine.rs.
 
 mod engine;
+mod gz;
 mod sys;
 
 use engine::{Buf, DNA, Engine, PEPTIDE, compl};
@@ -55,6 +56,12 @@ impl<R: Read> Input<R> {
                     return true;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    // damaged gzip input
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+                // like getc(): a read error ends the input
                 Err(_) => return false,
             }
         }
@@ -211,6 +218,33 @@ fn usage(errflag: i32, optind: i32, argc: i32) -> ! {
     std::process::exit(2);
 }
 
+/// The FASTA input: plain text, or gzip / bgzip compressed (detected by
+/// the first two bytes).
+fn open_fasta_input<R: Read + 'static>(mut r: R) -> Box<dyn Read> {
+    let mut head = Vec::with_capacity(2);
+    while head.len() < 2 {
+        let mut b = [0u8; 1];
+        match r.read(&mut b) {
+            Ok(0) => break,
+            Ok(_) => head.push(b[0]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    let r = std::io::Cursor::new(head.clone()).chain(r);
+    if gz::is_gzip(&head) {
+        match gz::GzReader::new(r) {
+            Ok(g) => Box::new(g),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        Box::new(r)
+    }
+}
+
 fn open_path(p: &[u8]) -> Option<std::fs::File> {
     use std::os::unix::ffi::OsStrExt;
     std::fs::File::open(std::ffi::OsStr::from_bytes(p)).ok()
@@ -345,7 +379,7 @@ fn real_main() {
         out: sys::Out::new(),
         line: Vec::new(),
     };
-    let mut inp = Input::new(std::io::stdin().lock());
+    let mut inp = Input::new(open_fasta_input(std::io::stdin().lock()));
     let mut id: Vec<u8> = Vec::new();
     let mut body: Vec<u8> = Vec::new();
     let mut got_gt = false;

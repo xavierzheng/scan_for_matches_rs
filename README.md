@@ -44,6 +44,14 @@ scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] pattern_file 
 | `-o N` | show overlapping hits (the value is not used) |
 | `-i file` | file of sequence ids to skip |
 
+The FASTA input on stdin can be plain text or compressed with gzip or
+bgzip (for example NCBI `*.fna.gz` files); compression is detected
+automatically:
+
+```sh
+scan_for_matches -c pat_file < genome.fna.gz
+```
+
 Example (from the original README):
 
 ```sh
@@ -82,7 +90,8 @@ Only these (details in `CHANGELOG.md`):
   the output still shows the data as it is;
 * `-c` with `-p` is an error (exit status 2);
 * with `-c`, a lowercase `s` is shown as `s` (the original showed `S`);
-* bytes 0x80 and above are unknown characters, like `x`.
+* bytes 0x80 and above are unknown characters, like `x`;
+* (after 0.1.0) gzip / bgzip compressed FASTA input is accepted.
 
 Unchanged on purpose (see `TODO.md`, group C): a pattern whose longest
 match is 0 characters is a pattern error, the value of `-o` is not used, a
@@ -102,6 +111,8 @@ cargo test --release
   (234 cases changed by the fixes).
 * `tests/fixes.rs` – one test per fix, with expected results worked out
   from the pattern language.
+* `tests/gzip_input.rs` – gzip and multi-member (bgzip) input, damaged
+  input.
 * unit test in `src/engine.rs` – the inexact matcher against a separate
   recursive implementation of its search order (200 000 random cases).
 
@@ -132,5 +143,6 @@ original, because the choices it skipped are now tried.
 
 * `src/main.rs` – port of `scan_for_matches.c` (options, FASTA, output)
 * `src/engine.rs` – port of `ggpunit.c` (pattern parser and matcher)
+* `src/gz.rs` – gzip / bgzip input (system zlib)
 * `src/sys.rs` – the few C library calls used (`getopt`, `sscanf`, stdio
   output, signals, `mmap`)

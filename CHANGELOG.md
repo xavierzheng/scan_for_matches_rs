@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased (0.2.0)
+
+- FASTA input compressed with gzip or bgzip is read directly (detected by
+  its first bytes; uses the system zlib library).  Damaged or truncated
+  input stops with "gzip input: ..." and exit status 1.
+
 ## 0.1.0 — 2026-10-01
 
 Fixes the bugs and input problems of the original (`TODO.md`, groups A

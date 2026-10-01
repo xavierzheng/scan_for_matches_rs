@@ -38,7 +38,7 @@ def run(line):
     return f, st, p.stdout
 
 
-with ThreadPoolExecutor(os.cpu_count()) as ex:
+with ThreadPoolExecutor(min(8, os.cpu_count())) as ex:
     results = list(ex.map(run, lines))
 
 same, fixed, slow = [], [], 0
