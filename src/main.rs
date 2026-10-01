@@ -8,7 +8,7 @@
 mod engine;
 mod sys;
 
-use engine::{compl, Buf, Engine, DNA, PEPTIDE};
+use engine::{Buf, DNA, Engine, PEPTIDE, compl};
 use std::io::Read;
 
 const MAX_PAT_LINE_LN: usize = 32000;
@@ -34,7 +34,13 @@ struct Input<R: Read> {
 
 impl<R: Read> Input<R> {
     fn new(r: R) -> Input<R> {
-        Input { r, buf: vec![0u8; 1 << 16], pos: 0, len: 0, back: None }
+        Input {
+            r,
+            buf: vec![0u8; 1 << 16],
+            pos: 0,
+            len: 0,
+            back: None,
+        }
     }
 
     fn fill(&mut self) -> bool {
@@ -130,7 +136,12 @@ impl<R: Read> Input<R> {
             let chunk = &self.buf[self.pos..self.len];
             match chunk.iter().position(|&b| b == b'>') {
                 Some(k) => {
-                    out.extend(chunk[..k].iter().copied().filter(|&b| b != b' ' && b != b'\n'));
+                    out.extend(
+                        chunk[..k]
+                            .iter()
+                            .copied()
+                            .filter(|&b| b != b' ' && b != b'\n'),
+                    );
                     self.pos += k + 1;
                     return b'>' as i32;
                 }
@@ -156,7 +167,8 @@ impl Printer {
         self.line.clear();
         self.line.push(b'>');
         self.line.extend_from_slice(id);
-        self.line.extend_from_slice(format!(":[{},{}]\n", a, b).as_bytes());
+        self.line
+            .extend_from_slice(format!(":[{},{}]\n", a, b).as_bytes());
         self.out.write(&self.line);
         self.line.clear();
         for i1 in 0..n {
@@ -204,7 +216,10 @@ fn main() {
     // The parser and max_mat() recurse as deeply as the C code does; give
     // them a large stack so only a truly endless recursion (which crashes
     // the C program too) ends in SIGSEGV.
-    let t = std::thread::Builder::new().stack_size(1 << 30).spawn(real_main).expect("thread");
+    let t = std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(real_main)
+        .expect("thread");
     let _ = t.join();
 }
 
@@ -320,7 +335,10 @@ fn real_main() {
     // is this constant in the reference build.
     let mut hits: Vec<i64> = vec![0; 2000];
     hits[0] = 0x0f00_7fff_ffff_fff8;
-    let mut pr = Printer { out: sys::Out::new(), line: Vec::new() };
+    let mut pr = Printer {
+        out: sys::Out::new(),
+        line: Vec::new(),
+    };
     let mut inp = Input::new(std::io::stdin().lock());
     let mut id: Vec<u8> = Vec::new();
     let mut body: Vec<u8> = Vec::new();
@@ -330,7 +348,11 @@ fn real_main() {
         if max_hits <= 0 {
             break;
         }
-        let r = if !got_gt { inp.scan_gt_s(&mut id) } else { inp.scan_s(&mut id) };
+        let r = if !got_gt {
+            inp.scan_gt_s(&mut id)
+        } else {
+            inp.scan_s(&mut id)
+        };
         if r != 1 {
             break;
         }
@@ -383,8 +405,20 @@ fn real_main() {
             max_hits -= 1;
             let n = i as usize;
             let cb = eng.cdata_base();
-            pr.hit(&id, 1 + hits[0] - cb, 1 + (hits[n] - 1 - cb), &hits, n, &data, cb);
-            i = if !show_overlaps { eng.cont_match(&mut hits) } else { eng.next_match(&mut hits) };
+            pr.hit(
+                &id,
+                1 + hits[0] - cb,
+                1 + (hits[n] - 1 - cb),
+                &hits,
+                n,
+                &data,
+                cb,
+            );
+            i = if !show_overlaps {
+                eng.cont_match(&mut hits)
+            } else {
+                eng.next_match(&mut hits)
+            };
         }
 
         if complements {
@@ -410,7 +444,15 @@ fn real_main() {
                 let n = i as usize;
                 let l = ln as i64;
                 let cb = eng.cdata_base();
-                pr.hit(&id, 1 + (l - 1) - (hits[0] - cb), 1 + (l - 1) - (hits[n] - 1 - cb), &hits, n, &data, cb);
+                pr.hit(
+                    &id,
+                    1 + (l - 1) - (hits[0] - cb),
+                    1 + (l - 1) - (hits[n] - 1 - cb),
+                    &hits,
+                    n,
+                    &data,
+                    cb,
+                );
                 i = eng.cont_match(&mut hits);
             }
         }

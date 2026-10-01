@@ -25,7 +25,7 @@
 //! before (see `Pol`); an access outside these blocks ends the program the
 //! way the C program ends (SIGSEGV / SIGBUS).
 
-use crate::sys::{abort, sigbus, segv};
+use crate::sys::{abort, segv, sigbus};
 
 pub const PEPTIDE: i32 = 1;
 pub const DNA: i32 = 2;
@@ -138,7 +138,9 @@ pub struct Buf {
 
 impl Buf {
     pub fn new() -> Buf {
-        Buf { v: vec![0u8; ALLOC_LEN as usize] }
+        Buf {
+            v: vec![0u8; ALLOC_LEN as usize],
+        }
     }
 
     /// None when the C program would fault on this read.
@@ -200,7 +202,12 @@ fn pu_ok_at(sb: i64, p: i64) -> bool {
 enum Out {
     Done(i32),
     /// a unit pointer outside the static block: continue in checked mode
-    Bail { back: bool, cr: i64, sr: i64, br: i64 },
+    Bail {
+        back: bool,
+        cr: i64,
+        sr: i64,
+        br: i64,
+    },
 }
 
 /// Everything the rare (out-of-line) memory paths need.  It sits in a Box
@@ -270,7 +277,12 @@ fn wb_slow(sm: *const SlowMem, a: i64, v: u8) {
 #[inline(never)]
 fn r32_slow(sm: *const SlowMem, a: i64) -> i32 {
     let sm = unsafe { &*sm };
-    i32::from_le_bytes([rb_full(sm, a), rb_full(sm, a + 1), rb_full(sm, a + 2), rb_full(sm, a + 3)])
+    i32::from_le_bytes([
+        rb_full(sm, a),
+        rb_full(sm, a + 1),
+        rb_full(sm, a + 2),
+        rb_full(sm, a + 3),
+    ])
 }
 
 #[cold]
@@ -408,12 +420,20 @@ impl M {
     /// a field of a unit reached through a pointer that has not been checked
     #[inline(always)]
     fn pu_r64<P: Pol>(self, pu: i64, off: i64) -> i64 {
-        if !P::CHECKED && self.pu_ok(pu) { self.pr64::<Fast>(pu + off) } else { self.r64(pu + off) }
+        if !P::CHECKED && self.pu_ok(pu) {
+            self.pr64::<Fast>(pu + off)
+        } else {
+            self.r64(pu + off)
+        }
     }
 
     #[inline(always)]
     fn pu_r32<P: Pol>(self, pu: i64, off: i64) -> i32 {
-        if !P::CHECKED && self.pu_ok(pu) { self.pr32::<Fast>(pu + off) } else { self.r32(pu + off) }
+        if !P::CHECKED && self.pu_ok(pu) {
+            self.pr32::<Fast>(pu + off)
+        } else {
+            self.r32(pu + off)
+        }
     }
 
     /// Are the `n` bytes from `a` inside the coded sequence buffer?
@@ -431,7 +451,11 @@ impl M {
     /// KnownChar(C)
     #[inline(always)]
     fn known_char(self, c: u8) -> bool {
-        if self.pep { true } else { KNOWN_CHAR[c as usize] != 0 }
+        if self.pep {
+            true
+        } else {
+            KNOWN_CHAR[c as usize] != 0
+        }
     }
 
     /// Matches(C1, C2)
@@ -528,7 +552,11 @@ fn name_id(l: &[u8], p: usize) -> Option<(i32, usize)> {
 fn name_assgn(l: &[u8], p: usize) -> Option<(i32, usize)> {
     let (n, p) = name_id(l, p)?;
     let p = ws(l, p);
-    if at(l, p) == b'=' { Some((n, p + 1)) } else { None }
+    if at(l, p) == b'=' {
+        Some((n, p + 1))
+    } else {
+        None
+    }
 }
 
 fn rule_id(l: &[u8], p: usize) -> Option<(i32, usize)> {
@@ -562,7 +590,11 @@ fn misinsdel(l: &[u8], p: usize) -> Option<(i32, i32, i32, usize)> {
 }
 
 fn elipses(l: &[u8], p: usize) -> Option<usize> {
-    if at(l, p) == b'.' && at(l, p + 1) == b'.' && at(l, p + 2) == b'.' { Some(p + 3) } else { None }
+    if at(l, p) == b'.' && at(l, p + 1) == b'.' && at(l, p + 2) == b'.' {
+        Some(p + 3)
+    } else {
+        None
+    }
 }
 
 fn word(s: &[u8], l: &[u8], mut p: usize) -> Option<usize> {
@@ -711,7 +743,9 @@ impl Engine {
         let mut heap = vec![0u8; HEAP_CAP];
         // sequence buffer: LOW_SLACK zero bytes before it, and a start
         // address with the same low 24 bits as in the reference runs
-        let mut cdata = Buf { v: vec![0u8; LOW_SLACK as usize + ALLOC_LEN as usize + (1 << 24)] };
+        let mut cdata = Buf {
+            v: vec![0u8; LOW_SLACK as usize + ALLOC_LEN as usize + (1 << 24)],
+        };
         let cd_ptr = {
             let p = cdata.v.as_mut_ptr();
             let lo = p as i64 + LOW_SLACK;
@@ -721,8 +755,18 @@ impl Engine {
             }
             unsafe { p.add((c - p as i64) as usize) }
         };
-        let slow = Box::new(SlowMem { s: s_ptr, cd: cd_ptr, heap: heap.as_mut_ptr(), heap_len: 0 });
-        let mem = M { s: slow.s, cd: slow.cd, sm: &*slow as *const SlowMem, pep: false };
+        let slow = Box::new(SlowMem {
+            s: s_ptr,
+            cd: cd_ptr,
+            heap: heap.as_mut_ptr(),
+            heap_len: 0,
+        });
+        let mem = M {
+            s: slow.s,
+            cd: slow.cd,
+            sm: &*slow as *const SlowMem,
+            pep: false,
+        };
         let mut e = Engine {
             _heap: heap,
             slow,
@@ -818,7 +862,11 @@ impl Engine {
 
     fn build_conversion_tables(&mut self) {
         for the_char in 0..256i64 {
-            let lc = if the_char < 128 { (the_char as u8).to_ascii_lowercase() } else { the_char as u8 };
+            let lc = if the_char < 128 {
+                (the_char as u8).to_ascii_lowercase()
+            } else {
+                the_char as u8
+            };
             let mut v: u8 = match lc {
                 b'a' => A_BIT,
                 b'c' => C_BIT,
@@ -1021,9 +1069,10 @@ impl Engine {
         }
         let (n, p) = name_id(l, p + 1)?;
         if self.seq_type == DNA
-            && let Some((mis, ins, del, p1)) = misinsdel(l, p) {
-                return Some((n, mis, ins, del, p1));
-            }
+            && let Some((mis, ins, del, p1)) = misinsdel(l, p)
+        {
+            return Some((n, mis, ins, del, p1));
+        }
         Some((n, 0, 0, 0, p))
     }
 
@@ -1126,7 +1175,11 @@ impl Engine {
         }
         let (n, q) = num(l, p + 1)?;
         self.w32(dst, n);
-        if (0..=MAX_NAMES).contains(&n) { Some(q) } else { None }
+        if (0..=MAX_NAMES).contains(&n) {
+            Some(q)
+        } else {
+            None
+        }
     }
 
     /// llim_pat(v, max, p) with v = &pu->info.llim.llim_vec,
@@ -1477,7 +1530,8 @@ impl Engine {
             ANY_PUNIT => 1,
             COMPL_PUNIT | REPEAT_PUNIT | INV_REP_PUNIT => {
                 let p1 = self.names(self.r32(pu + O_U12));
-                self.max_mat(p1, depth + 1).wrapping_add(self.r32(pu + O_U0))
+                self.max_mat(p1, depth + 1)
+                    .wrapping_add(self.r32(pu + O_U0))
             }
             SIM_PUNIT => self.r32(pu + O_U12).wrapping_add(self.r32(pu + O_U0)),
             WEIGHT_PUNIT => self.r32(pu + O_U0),
@@ -1770,9 +1824,10 @@ impl Engine {
     #[inline(always)]
     fn next_punit<P: Pol>(m: M, pu: i64) -> i64 {
         if !P::CHECKED
-            && let Some(n) = Self::next_punit_fast(m, pu) {
-                return n;
-            }
+            && let Some(n) = Self::next_punit_fast(m, pu)
+        {
+            return n;
+        }
         let n = m.r64(pu + O_NXT);
         if n != 0 {
             return n;
@@ -1862,7 +1917,11 @@ impl Engine {
                 last = pu;
                 pu = hr64(up, O_PREV);
             } else if hr64(up, O_NXT) == last {
-                pu = if hr32(up, O_U24) == 1 { hr64(up, O_U0) } else { hr64(up, O_U8) };
+                pu = if hr32(up, O_U24) == 1 {
+                    hr64(up, O_U0)
+                } else {
+                    hr64(up, O_U8)
+                };
                 loop {
                     if !m.pu_ok(pu) {
                         return false;
@@ -1896,7 +1955,11 @@ impl Engine {
                 last = pu;
                 pu = m.r64(pu + O_PREV);
             } else if m.r64(pu + O_NXT) == last {
-                pu = if m.r32(pu + O_U24) == 1 { m.r64(pu + O_U0) } else { m.r64(pu + O_U8) };
+                pu = if m.r32(pu + O_U24) == 1 {
+                    m.r64(pu + O_U0)
+                } else {
+                    m.r64(pu + O_U8)
+                };
                 loop {
                     let n = m.r64(pu + O_NXT);
                     if n == 0 {
@@ -1912,14 +1975,23 @@ impl Engine {
         }
     }
 
-    fn pattern_match(&mut self, pu: i64, start: i64, end: i64, hits: &mut Vec<i64>, first: bool) -> i32 {
+    fn pattern_match(
+        &mut self,
+        pu: i64,
+        start: i64,
+        end: i64,
+        hits: &mut Vec<i64>,
+        first: bool,
+    ) -> i32 {
         let br = self.br1;
         match self.pm::<Fast>(start, end, hits, !first, pu, start, br) {
             Out::Done(n) => n,
-            Out::Bail { back, cr, sr, br } => match self.pm::<Checked>(start, end, hits, back, cr, sr, br) {
-                Out::Done(n) => n,
-                Out::Bail { .. } => unreachable!(),
-            },
+            Out::Bail { back, cr, sr, br } => {
+                match self.pm::<Checked>(start, end, hits, back, cr, sr, br) {
+                    Out::Done(n) => n,
+                    Out::Bail { .. } => unreachable!(),
+                }
+            }
         }
     }
 
@@ -1949,22 +2021,38 @@ impl Engine {
         // fields of the current unit
         macro_rules! g32 {
             ($o:expr) => {
-                if P::CHECKED { m.r32(cr + $o) } else { hr32(cp, $o) }
+                if P::CHECKED {
+                    m.r32(cr + $o)
+                } else {
+                    hr32(cp, $o)
+                }
             };
         }
         macro_rules! g64 {
             ($o:expr) => {
-                if P::CHECKED { m.r64(cr + $o) } else { hr64(cp, $o) }
+                if P::CHECKED {
+                    m.r64(cr + $o)
+                } else {
+                    hr64(cp, $o)
+                }
             };
         }
         macro_rules! s32 {
             ($o:expr, $v:expr) => {
-                if P::CHECKED { m.w32(cr + $o, $v) } else { hw32(cp, $o, $v) }
+                if P::CHECKED {
+                    m.w32(cr + $o, $v)
+                } else {
+                    hw32(cp, $o, $v)
+                }
             };
         }
         macro_rules! s64 {
             ($o:expr, $v:expr) => {
-                if P::CHECKED { m.w64(cr + $o, $v) } else { hw64(cp, $o, $v) }
+                if P::CHECKED {
+                    m.w64(cr + $o, $v)
+                } else {
+                    hw64(cp, $o, $v)
+                }
             };
         }
 
@@ -1996,295 +2084,337 @@ impl Engine {
                 'tryl: loop {
                     if !P::CHECKED {
                         if !m.pu_ok(cr) {
-                            return Out::Bail { back: false, cr, sr, br };
+                            return Out::Bail {
+                                back: false,
+                                cr,
+                                sr,
+                                br,
+                            };
                         }
                         cp = m.up(cr);
                     }
                     match g32!(O_TYPE) {
-                    MATCH_START => {
-                        if sr == start {
-                            s64!(O_HIT, sr);
-                            success!('tryl, 'main);
-                        } else {
-                            break 'tryl;
-                        }
-                    }
-                    MATCH_END => {
-                        if sr == end + 1 {
-                            s64!(O_HIT, sr);
-                            success!('tryl, 'main);
-                        } else {
-                            break 'tryl;
-                        }
-                    }
-                    ANY_PUNIT => {
-                        let (n, c) = self.t_any::<P>(cr, sr, er);
-                        if c == 0 {
-                            break 'tryl;
-                        }
-                        if c == 2 {
-                            push_br!();
-                        }
-                        sr = n;
-                        success!('tryl, 'main);
-                    }
-                    LLIM_PUNIT => {
-                        let (n, c) = self.t_llim::<P>(cr, sr, er);
-                        if c == 0 {
-                            break 'tryl;
-                        }
-                        if c == 2 {
-                            push_br!();
-                        }
-                        sr = n;
-                        success!('tryl, 'main);
-                    }
-                    RANGE_PUNIT => {
-                        let min = g32!(O_U0);
-                        let i = min.wrapping_sub(1);
-                        if sr + i as i64 <= er {
-                            s64!(O_HIT, sr);
-                            sr += i as i64 + 1;
-                            if (sr <= er && g32!(O_U4) != 0) || (g32!(O_ANCH) == 0 && sr <= er) {
-                                push_br!();
-                                let mn = g32!(O_U0);
-                                s32!(O_U8, mn.wrapping_add(1));
-                            }
-                            success!('tryl, 'main);
-                        } else {
-                            break 'tryl;
-                        }
-                    }
-                    EXACT_PUNIT => {
-                        let len = g32!(O_U0);
-                        let mut last = er + 1 - len as i64;
-                        if last > sr && g32!(O_ANCH) != 0 {
-                            last = sr;
-                        }
-                        let p1 = g64!(O_U8);
-                        let ln = len.wrapping_sub(1);
-                        let c0 = m.rb(p1);
-                        while sr <= last {
-                            if m.matches(m.rb(sr), c0) {
-                                let mut p2 = sr + 1;
-                                let mut p3 = p1 + 1;
-                                let mut i = ln;
-                                while i != 0 && m.matches(m.rb(p2), m.rb(p3)) {
-                                    i = i.wrapping_sub(1);
-                                    p3 += 1;
-                                    p2 += 1;
-                                }
-                                if i == 0 {
-                                    break;
-                                }
-                            }
-                            sr += 1;
-                        }
-                        if sr > last {
-                            break 'tryl;
-                        }
-                        s64!(O_HIT, sr);
-                        if sr < last {
-                            push_br!();
-                        }
-                        sr += g32!(O_U0) as i64;
-                        success!('tryl, 'main);
-                    }
-                    COMPL_PUNIT => {
-                        let pu1 = m.names_p::<P>(g32!(O_U12));
-                        let pp = if !P::CHECKED && m.pu_ok(pu1) { m.up(pu1) } else { std::ptr::null_mut() };
-                        let pu1_hit = |m: M| if pp.is_null() { m.r64(pu1 + O_HIT) } else { hr64(pp, O_HIT) };
-                        let p1 = pu1_hit(m);
-                        let mut ln = if pp.is_null() { m.r32(pu1 + O_MLEN) } else { hr32(pp, O_MLEN) };
-                        let rs = g32!(O_U16);
-                        let (ins, del, mis) = (g32!(O_U0), g32!(O_U4), g32!(O_U8));
-                        if rs != -1 || ins != 0 || del != 0 || mis != 0 {
-                            let i = self.loose_match(One::Mem(p1), ln, sr, (er + 1 - sr) as i32, ins, del, mis, rs, true);
-                            if i != 0 {
-                                let i = i - 1;
+                        MATCH_START => {
+                            if sr == start {
                                 s64!(O_HIT, sr);
-                                sr += i as i64;
                                 success!('tryl, 'main);
                             } else {
                                 break 'tryl;
                             }
-                        } else if er - sr >= ln as i64 - 1 {
+                        }
+                        MATCH_END => {
+                            if sr == end + 1 {
+                                s64!(O_HIT, sr);
+                                success!('tryl, 'main);
+                            } else {
+                                break 'tryl;
+                            }
+                        }
+                        ANY_PUNIT => {
+                            let (n, c) = self.t_any::<P>(cr, sr, er);
+                            if c == 0 {
+                                break 'tryl;
+                            }
+                            if c == 2 {
+                                push_br!();
+                            }
+                            sr = n;
+                            success!('tryl, 'main);
+                        }
+                        LLIM_PUNIT => {
+                            let (n, c) = self.t_llim::<P>(cr, sr, er);
+                            if c == 0 {
+                                break 'tryl;
+                            }
+                            if c == 2 {
+                                push_br!();
+                            }
+                            sr = n;
+                            success!('tryl, 'main);
+                        }
+                        RANGE_PUNIT => {
+                            let min = g32!(O_U0);
+                            let i = min.wrapping_sub(1);
+                            if sr + i as i64 <= er {
+                                s64!(O_HIT, sr);
+                                sr += i as i64 + 1;
+                                if (sr <= er && g32!(O_U4) != 0) || (g32!(O_ANCH) == 0 && sr <= er)
+                                {
+                                    push_br!();
+                                    let mn = g32!(O_U0);
+                                    s32!(O_U8, mn.wrapping_add(1));
+                                }
+                                success!('tryl, 'main);
+                            } else {
+                                break 'tryl;
+                            }
+                        }
+                        EXACT_PUNIT => {
+                            let len = g32!(O_U0);
+                            let mut last = er + 1 - len as i64;
+                            if last > sr && g32!(O_ANCH) != 0 {
+                                last = sr;
+                            }
+                            let p1 = g64!(O_U8);
+                            let ln = len.wrapping_sub(1);
+                            let c0 = m.rb(p1);
+                            while sr <= last {
+                                if m.matches(m.rb(sr), c0) {
+                                    let mut p2 = sr + 1;
+                                    let mut p3 = p1 + 1;
+                                    let mut i = ln;
+                                    while i != 0 && m.matches(m.rb(p2), m.rb(p3)) {
+                                        i = i.wrapping_sub(1);
+                                        p3 += 1;
+                                        p2 += 1;
+                                    }
+                                    if i == 0 {
+                                        break;
+                                    }
+                                }
+                                sr += 1;
+                            }
+                            if sr > last {
+                                break 'tryl;
+                            }
                             s64!(O_HIT, sr);
-                            // pu1->hit is read again, as in C (pu1 may be this unit)
-                            let mut q = pu1_hit(m) + (ln as i64 - 1);
-                            let mut ok = true;
-                            if !P::CHECKED && !m.pep && ln > 0 && m.cd_ok(q - (ln as i64 - 1), ln as i64) && m.cd_ok(sr, ln as i64) {
-                                // all reads are inside the sequence buffer
-                                let qp = q as *const u8;
-                                let sp = sr as *const u8;
-                                let n = ln as usize;
-                                let mut k = 0usize;
-                                while k < n {
-                                    let c = unsafe { *qp.wrapping_sub(k) };
-                                    if KNOWN_CHAR[(c & 15) as usize] == 0 || ((c >> 4) & 15) != (unsafe { *sp.add(k) } & 15) {
+                            if sr < last {
+                                push_br!();
+                            }
+                            sr += g32!(O_U0) as i64;
+                            success!('tryl, 'main);
+                        }
+                        COMPL_PUNIT => {
+                            let pu1 = m.names_p::<P>(g32!(O_U12));
+                            let pp = if !P::CHECKED && m.pu_ok(pu1) {
+                                m.up(pu1)
+                            } else {
+                                std::ptr::null_mut()
+                            };
+                            let pu1_hit = |m: M| {
+                                if pp.is_null() {
+                                    m.r64(pu1 + O_HIT)
+                                } else {
+                                    hr64(pp, O_HIT)
+                                }
+                            };
+                            let p1 = pu1_hit(m);
+                            let mut ln = if pp.is_null() {
+                                m.r32(pu1 + O_MLEN)
+                            } else {
+                                hr32(pp, O_MLEN)
+                            };
+                            let rs = g32!(O_U16);
+                            let (ins, del, mis) = (g32!(O_U0), g32!(O_U4), g32!(O_U8));
+                            if rs != -1 || ins != 0 || del != 0 || mis != 0 {
+                                let i = self.loose_match(
+                                    One::Mem(p1),
+                                    ln,
+                                    sr,
+                                    (er + 1 - sr) as i32,
+                                    ins,
+                                    del,
+                                    mis,
+                                    rs,
+                                    true,
+                                );
+                                if i != 0 {
+                                    let i = i - 1;
+                                    s64!(O_HIT, sr);
+                                    sr += i as i64;
+                                    success!('tryl, 'main);
+                                } else {
+                                    break 'tryl;
+                                }
+                            } else if er - sr >= ln as i64 - 1 {
+                                s64!(O_HIT, sr);
+                                // pu1->hit is read again, as in C (pu1 may be this unit)
+                                let mut q = pu1_hit(m) + (ln as i64 - 1);
+                                let mut ok = true;
+                                if !P::CHECKED
+                                    && !m.pep
+                                    && ln > 0
+                                    && m.cd_ok(q - (ln as i64 - 1), ln as i64)
+                                    && m.cd_ok(sr, ln as i64)
+                                {
+                                    // all reads are inside the sequence buffer
+                                    let qp = q as *const u8;
+                                    let sp = sr as *const u8;
+                                    let n = ln as usize;
+                                    let mut k = 0usize;
+                                    while k < n {
+                                        let c = unsafe { *qp.wrapping_sub(k) };
+                                        if KNOWN_CHAR[(c & 15) as usize] == 0
+                                            || ((c >> 4) & 15) != (unsafe { *sp.add(k) } & 15)
+                                        {
+                                            ok = false;
+                                            break;
+                                        }
+                                        k += 1;
+                                    }
+                                    ln = 0;
+                                    q -= k as i64;
+                                    sr += k as i64;
+                                    let _ = q;
+                                }
+                                while ln != 0 {
+                                    ln = ln.wrapping_sub(1);
+                                    let c = m.rb(q);
+                                    if !m.known_char(c & 15) || ((c >> 4) & 15) != (m.rb(sr) & 15) {
                                         ok = false;
                                         break;
                                     }
-                                    k += 1;
+                                    q -= 1;
+                                    sr += 1;
                                 }
-                                ln = 0;
-                                q -= k as i64;
-                                sr += k as i64;
-                                let _ = q;
-                            }
-                            while ln != 0 {
-                                ln = ln.wrapping_sub(1);
-                                let c = m.rb(q);
-                                if !m.known_char(c & 15) || ((c >> 4) & 15) != (m.rb(sr) & 15) {
-                                    ok = false;
-                                    break;
+                                if ok {
+                                    success!('tryl, 'main);
+                                } else {
+                                    break 'tryl;
                                 }
-                                q -= 1;
-                                sr += 1;
-                            }
-                            if ok {
-                                success!('tryl, 'main);
                             } else {
                                 break 'tryl;
                             }
-                        } else {
-                            break 'tryl;
                         }
-                    }
-                    REPEAT_PUNIT => {
-                        let (n, c) = self.t_repeat::<P>(cr, sr, er);
-                        if c == 0 {
-                            break 'tryl;
+                        REPEAT_PUNIT => {
+                            let (n, c) = self.t_repeat::<P>(cr, sr, er);
+                            if c == 0 {
+                                break 'tryl;
+                            }
+                            if c == 2 {
+                                push_br!();
+                            }
+                            sr = n;
+                            success!('tryl, 'main);
                         }
-                        if c == 2 {
+                        INV_REP_PUNIT => {
+                            let (n, c) = self.t_inv_rep::<P>(cr, sr, er);
+                            if c == 0 {
+                                break 'tryl;
+                            }
+                            if c == 2 {
+                                push_br!();
+                            }
+                            sr = n;
+                            success!('tryl, 'main);
+                        }
+                        SIM_PUNIT => {
+                            let (n, c) = self.t_sim::<P>(cr, sr, er);
+                            if c == 0 {
+                                break 'tryl;
+                            }
+                            if c == 2 {
+                                push_br!();
+                            }
+                            sr = n;
+                            success!('tryl, 'main);
+                        }
+                        WEIGHT_PUNIT => {
+                            let (n, c) = self.t_weight::<P>(cr, sr, er);
+                            if c == 0 {
+                                break 'tryl;
+                            }
+                            if c == 2 {
+                                push_br!();
+                            }
+                            sr = n;
+                            success!('tryl, 'main);
+                        }
+                        OR_PUNIT => {
                             push_br!();
+                            s64!(O_U16, sr);
+                            s64!(O_HIT, sr);
+                            s32!(O_U24, 1);
+                            cr = g64!(O_U0);
+                            continue 'tryl;
                         }
-                        sr = n;
-                        success!('tryl, 'main);
-                    }
-                    INV_REP_PUNIT => {
-                        let (n, c) = self.t_inv_rep::<P>(cr, sr, er);
-                        if c == 0 {
-                            break 'tryl;
-                        }
-                        if c == 2 {
-                            push_br!();
-                        }
-                        sr = n;
-                        success!('tryl, 'main);
-                    }
-                    SIM_PUNIT => {
-                        let (n, c) = self.t_sim::<P>(cr, sr, er);
-                        if c == 0 {
-                            break 'tryl;
-                        }
-                        if c == 2 {
-                            push_br!();
-                        }
-                        sr = n;
-                        success!('tryl, 'main);
-                    }
-                    WEIGHT_PUNIT => {
-                        let (n, c) = self.t_weight::<P>(cr, sr, er);
-                        if c == 0 {
-                            break 'tryl;
-                        }
-                        if c == 2 {
-                            push_br!();
-                        }
-                        sr = n;
-                        success!('tryl, 'main);
-                    }
-                    OR_PUNIT => {
-                        push_br!();
-                        s64!(O_U16, sr);
-                        s64!(O_HIT, sr);
-                        s32!(O_U24, 1);
-                        cr = g64!(O_U0);
-                        continue 'tryl;
-                    }
-                    _ => break 'tryl,
+                        _ => break 'tryl,
                     }
                 }
             }
             skip_try = false;
             // BACKTRACK
             'backl: loop {
-                    if br == 0 {
-                        return Out::Done(0);
+                if br == 0 {
+                    return Out::Done(0);
+                }
+                if !P::CHECKED {
+                    if !m.pu_ok(br) {
+                        return Out::Bail {
+                            back: true,
+                            cr,
+                            sr,
+                            br,
+                        };
                     }
-                    if !P::CHECKED {
-                        if !m.pu_ok(br) {
-                            return Out::Bail { back: true, cr, sr, br };
-                        }
-                        cp = m.up(br);
-                    }
-                    cr = br;
-                    br = g64!(O_BR);
-                    sr = g64!(O_HIT);
-                    match g32!(O_TYPE) {
-                        RANGE_PUNIT => {
-                            let nx = g32!(O_U8);
-                            let min = g32!(O_U0);
-                            let width = g32!(O_U4);
-                            if nx <= min.wrapping_add(width) && sr + nx as i64 - 1 <= er {
-                                s32!(O_U8, nx.wrapping_add(1));
-                                sr += nx as i64;
+                    cp = m.up(br);
+                }
+                cr = br;
+                br = g64!(O_BR);
+                sr = g64!(O_HIT);
+                match g32!(O_TYPE) {
+                    RANGE_PUNIT => {
+                        let nx = g32!(O_U8);
+                        let min = g32!(O_U0);
+                        let width = g32!(O_U4);
+                        if nx <= min.wrapping_add(width) && sr + nx as i64 - 1 <= er {
+                            s32!(O_U8, nx.wrapping_add(1));
+                            sr += nx as i64;
+                            br = cr;
+                            success!('main, 'main);
+                        } else {
+                            let h = g64!(O_HIT) + 1;
+                            s64!(O_HIT, h);
+                            if h + g32!(O_U0) as i64 - 1 <= er && g32!(O_ANCH) == 0 {
+                                let mn = g32!(O_U0);
+                                s32!(O_U8, mn.wrapping_add(1));
+                                sr = g64!(O_HIT) + g32!(O_U0) as i64;
                                 br = cr;
                                 success!('main, 'main);
-                            } else {
-                                let h = g64!(O_HIT) + 1;
-                                s64!(O_HIT, h);
-                                if h + g32!(O_U0) as i64 - 1 <= er && g32!(O_ANCH) == 0 {
-                                    let mn = g32!(O_U0);
-                                    s32!(O_U8, mn.wrapping_add(1));
-                                    sr = g64!(O_HIT) + g32!(O_U0) as i64;
-                                    br = cr;
-                                    success!('main, 'main);
-                                } else {
-                                    continue 'backl;
-                                }
-                            }
-                        }
-                        LLIM_PUNIT | ANY_PUNIT | EXACT_PUNIT | SIM_PUNIT | WEIGHT_PUNIT => {
-                            sr += 1;
-                            continue 'main;
-                        }
-                        OR_PUNIT => {
-                            if g32!(O_U24) == 1 {
-                                s32!(O_U24, 2);
-                                cr = g64!(O_U8);
-                                continue 'main;
-                            } else if g32!(O_ANCH) == 0 && g32!(O_U24) == 2 {
-                                sr += 1;
-                                continue 'main;
                             } else {
                                 continue 'backl;
                             }
                         }
-                        _ => break 'main,
                     }
+                    LLIM_PUNIT | ANY_PUNIT | EXACT_PUNIT | SIM_PUNIT | WEIGHT_PUNIT => {
+                        sr += 1;
+                        continue 'main;
+                    }
+                    OR_PUNIT => {
+                        if g32!(O_U24) == 1 {
+                            s32!(O_U24, 2);
+                            cr = g64!(O_U8);
+                            continue 'main;
+                        } else if g32!(O_ANCH) == 0 && g32!(O_U24) == 2 {
+                            sr += 1;
+                            continue 'main;
+                        } else {
+                            continue 'backl;
+                        }
+                    }
+                    _ => break 'main,
                 }
             }
+        }
         // LEAVE
         {
-                    let mut revhits = std::mem::take(&mut self.revhits);
-                    self.collect_hits(cr, &mut revhits);
-                    let n = revhits.len();
-                    if hits.len() < n + 1 {
-                        hits.resize(n + 1, 0);
-                    }
-                    hits[..n].copy_from_slice(&revhits[..n]);
-                    hits[..n].reverse();
-                    hits[n] = sr;
-                    self.revhits = revhits;
-                    self.br1 = br;
-                    if n > MAX_PUNITS {
-                        // revhits[MAX_PUNITS] overflows into the stack guard
-                        abort();
-                    }
-                    Out::Done(n as i32)
-                }
+            let mut revhits = std::mem::take(&mut self.revhits);
+            self.collect_hits(cr, &mut revhits);
+            let n = revhits.len();
+            if hits.len() < n + 1 {
+                hits.resize(n + 1, 0);
+            }
+            hits[..n].copy_from_slice(&revhits[..n]);
+            hits[..n].reverse();
+            hits[n] = sr;
+            self.revhits = revhits;
+            self.br1 = br;
+            if n > MAX_PUNITS {
+                // revhits[MAX_PUNITS] overflows into the stack guard
+                abort();
+            }
+            Out::Done(n as i32)
+        }
     }
 
     #[inline(never)]
@@ -2295,17 +2425,29 @@ impl Engine {
         let cp = m.up(cr);
         macro_rules! g32 {
             ($o:expr) => {
-                if P::CHECKED { m.r32(cr + $o) } else { hr32(cp, $o) }
+                if P::CHECKED {
+                    m.r32(cr + $o)
+                } else {
+                    hr32(cp, $o)
+                }
             };
         }
         macro_rules! g64 {
             ($o:expr) => {
-                if P::CHECKED { m.r64(cr + $o) } else { hr64(cp, $o) }
+                if P::CHECKED {
+                    m.r64(cr + $o)
+                } else {
+                    hr64(cp, $o)
+                }
             };
         }
         macro_rules! s64 {
             ($o:expr, $v:expr) => {
-                if P::CHECKED { m.w64(cr + $o, $v) } else { hw64(cp, $o, $v) }
+                if P::CHECKED {
+                    m.w64(cr + $o, $v)
+                } else {
+                    hw64(cp, $o, $v)
+                }
             };
         }
         let mut last = er;
@@ -2315,7 +2457,10 @@ impl Engine {
         let cm = g64!(O_U0);
         while sr <= last {
             let i = m.rb(sr) as i8 as i32;
-            if i >= b'A' as i32 && i <= b'Z' as i32 && ((1i32 << (i - b'A' as i32)) as i64 & cm) != 0 {
+            if i >= b'A' as i32
+                && i <= b'Z' as i32
+                && ((1i32 << (i - b'A' as i32)) as i64 & cm) != 0
+            {
                 break;
             }
             sr += 1;
@@ -2326,8 +2471,8 @@ impl Engine {
             s64!(O_HIT, sr);
             if sr < last {
                 {
-            pushed = true;
-        }
+                    pushed = true;
+                }
             }
             sr += 1;
             (sr, if pushed { 2 } else { 1 })
@@ -2342,17 +2487,29 @@ impl Engine {
         let cp = m.up(cr);
         macro_rules! g32 {
             ($o:expr) => {
-                if P::CHECKED { m.r32(cr + $o) } else { hr32(cp, $o) }
+                if P::CHECKED {
+                    m.r32(cr + $o)
+                } else {
+                    hr32(cp, $o)
+                }
             };
         }
         macro_rules! g64 {
             ($o:expr) => {
-                if P::CHECKED { m.r64(cr + $o) } else { hr64(cp, $o) }
+                if P::CHECKED {
+                    m.r64(cr + $o)
+                } else {
+                    hr64(cp, $o)
+                }
             };
         }
         macro_rules! s64 {
             ($o:expr, $v:expr) => {
-                if P::CHECKED { m.w64(cr + $o, $v) } else { hw64(cp, $o, $v) }
+                if P::CHECKED {
+                    m.w64(cr + $o, $v)
+                } else {
+                    hw64(cp, $o, $v)
+                }
             };
         }
         let v = cr + O_U0;
@@ -2380,17 +2537,29 @@ impl Engine {
         let cp = m.up(cr);
         macro_rules! g32 {
             ($o:expr) => {
-                if P::CHECKED { m.r32(cr + $o) } else { hr32(cp, $o) }
+                if P::CHECKED {
+                    m.r32(cr + $o)
+                } else {
+                    hr32(cp, $o)
+                }
             };
         }
         macro_rules! g64 {
             ($o:expr) => {
-                if P::CHECKED { m.r64(cr + $o) } else { hr64(cp, $o) }
+                if P::CHECKED {
+                    m.r64(cr + $o)
+                } else {
+                    hr64(cp, $o)
+                }
             };
         }
         macro_rules! s64 {
             ($o:expr, $v:expr) => {
-                if P::CHECKED { m.w64(cr + $o, $v) } else { hw64(cp, $o, $v) }
+                if P::CHECKED {
+                    m.w64(cr + $o, $v)
+                } else {
+                    hw64(cp, $o, $v)
+                }
             };
         }
         let pu1 = m.names_p::<P>(g32!(O_U12));
@@ -2401,7 +2570,17 @@ impl Engine {
             (sr, if pushed { 2 } else { 1 })
         } else {
             let (ins, del, mis) = (g32!(O_U0), g32!(O_U4), g32!(O_U8));
-            let i = self.loose_match(One::Mem(p1), ln, sr, (er + 1 - sr) as i32, ins, del, mis, -1, false);
+            let i = self.loose_match(
+                One::Mem(p1),
+                ln,
+                sr,
+                (er + 1 - sr) as i32,
+                ins,
+                del,
+                mis,
+                -1,
+                false,
+            );
             if i != 0 {
                 let i = i - 1;
                 s64!(O_HIT, sr);
@@ -2421,17 +2600,29 @@ impl Engine {
         let cp = m.up(cr);
         macro_rules! g32 {
             ($o:expr) => {
-                if P::CHECKED { m.r32(cr + $o) } else { hr32(cp, $o) }
+                if P::CHECKED {
+                    m.r32(cr + $o)
+                } else {
+                    hr32(cp, $o)
+                }
             };
         }
         macro_rules! g64 {
             ($o:expr) => {
-                if P::CHECKED { m.r64(cr + $o) } else { hr64(cp, $o) }
+                if P::CHECKED {
+                    m.r64(cr + $o)
+                } else {
+                    hr64(cp, $o)
+                }
             };
         }
         macro_rules! s64 {
             ($o:expr, $v:expr) => {
-                if P::CHECKED { m.w64(cr + $o, $v) } else { hw64(cp, $o, $v) }
+                if P::CHECKED {
+                    m.w64(cr + $o, $v)
+                } else {
+                    hw64(cp, $o, $v)
+                }
             };
         }
         let pu1 = m.names_p::<P>(g32!(O_U12));
@@ -2455,7 +2646,17 @@ impl Engine {
                 &heap_copy[..]
             };
             let (ins, del, mis) = (g32!(O_U0), g32!(O_U4), g32!(O_U8));
-            let i = self.loose_match(One::Bytes(p3), ln, sr, (er + 1 - sr) as i32, ins, del, mis, -1, false);
+            let i = self.loose_match(
+                One::Bytes(p3),
+                ln,
+                sr,
+                (er + 1 - sr) as i32,
+                ins,
+                del,
+                mis,
+                -1,
+                false,
+            );
             if i != 0 {
                 let i = i - 1;
                 s64!(O_HIT, sr);
@@ -2475,17 +2676,29 @@ impl Engine {
         let cp = m.up(cr);
         macro_rules! g32 {
             ($o:expr) => {
-                if P::CHECKED { m.r32(cr + $o) } else { hr32(cp, $o) }
+                if P::CHECKED {
+                    m.r32(cr + $o)
+                } else {
+                    hr32(cp, $o)
+                }
             };
         }
         macro_rules! g64 {
             ($o:expr) => {
-                if P::CHECKED { m.r64(cr + $o) } else { hr64(cp, $o) }
+                if P::CHECKED {
+                    m.r64(cr + $o)
+                } else {
+                    hr64(cp, $o)
+                }
             };
         }
         macro_rules! s64 {
             ($o:expr, $v:expr) => {
-                if P::CHECKED { m.w64(cr + $o, $v) } else { hw64(cp, $o, $v) }
+                if P::CHECKED {
+                    m.w64(cr + $o, $v)
+                } else {
+                    hw64(cp, $o, $v)
+                }
             };
         }
         let len = g32!(O_U12);
@@ -2497,16 +2710,25 @@ impl Engine {
         let mut found = false;
         while sr <= last {
             let code = g64!(O_U16);
-            let (len, ins, del, mis) =
-                (g32!(O_U12), g32!(O_U0), g32!(O_U4), g32!(O_U8));
-            let i = self.loose_match(One::Mem(code), len, sr, (er + 1 - sr) as i32, ins, del, mis, -1, false);
+            let (len, ins, del, mis) = (g32!(O_U12), g32!(O_U0), g32!(O_U4), g32!(O_U8));
+            let i = self.loose_match(
+                One::Mem(code),
+                len,
+                sr,
+                (er + 1 - sr) as i32,
+                ins,
+                del,
+                mis,
+                -1,
+                false,
+            );
             if i != 0 {
                 let i = i - 1;
                 s64!(O_HIT, sr);
                 if sr < last {
                     {
-            pushed = true;
-        }
+                        pushed = true;
+                    }
                 }
                 sr += i as i64;
                 found = true;
@@ -2529,17 +2751,29 @@ impl Engine {
         let cp = m.up(cr);
         macro_rules! g32 {
             ($o:expr) => {
-                if P::CHECKED { m.r32(cr + $o) } else { hr32(cp, $o) }
+                if P::CHECKED {
+                    m.r32(cr + $o)
+                } else {
+                    hr32(cp, $o)
+                }
             };
         }
         macro_rules! g64 {
             ($o:expr) => {
-                if P::CHECKED { m.r64(cr + $o) } else { hr64(cp, $o) }
+                if P::CHECKED {
+                    m.r64(cr + $o)
+                } else {
+                    hr64(cp, $o)
+                }
             };
         }
         macro_rules! s64 {
             ($o:expr, $v:expr) => {
-                if P::CHECKED { m.w64(cr + $o, $v) } else { hw64(cp, $o, $v) }
+                if P::CHECKED {
+                    m.w64(cr + $o, $v)
+                } else {
+                    hw64(cp, $o, $v)
+                }
             };
         }
         let wlen = g32!(O_U0);
@@ -2640,8 +2874,8 @@ impl Engine {
             s64!(O_HIT, sr);
             if sr < last {
                 {
-            pushed = true;
-        }
+                    pushed = true;
+                }
             }
             sr += g32!(O_U0) as i64;
             (sr, if pushed { 2 } else { 1 })

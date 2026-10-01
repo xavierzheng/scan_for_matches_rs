@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Reference platform: the golden cases were recorded from the C program
+  # built on macOS arm64, so exact results are checked here.
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup component add clippy rustfmt
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --release -- -D warnings
+      - name: Build
+        run: cargo build --release
+      - name: Test (original suite + golden cases)
+        run: cargo test --release
+
+  # Not yet verified (see TODO.md): does it build and give the same results
+  # on Linux x86_64?  Reported, but does not fail the run.
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: CPU
+        run: lscpu | grep -E 'Model name|Flags' | sed 's/Flags:.*avx512f.*/Flags: (has avx512f)/'
+      - name: Build
+        run: cargo build --release
+      - name: Original test suite
+        run: cargo test --release --test original_suite
+      - name: Golden cases (macOS reference; differences expected in UB cases)
+        run: cargo test --release --test golden

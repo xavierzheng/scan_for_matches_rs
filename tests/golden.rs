@@ -7,7 +7,10 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
 
 fn unhex(s: &str) -> Vec<u8> {
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 struct Case {
@@ -51,7 +54,11 @@ fn run(c: &Case, dir: &std::path::Path) -> Result<(), String> {
             c.status,
             out.stdout.len(),
             c.stdout.len(),
-            if out.stdout != c.stdout { ", stdout differs" } else { "" }
+            if out.stdout != c.stdout {
+                ", stdout differs"
+            } else {
+                ""
+            }
         ));
     }
     Ok(())
@@ -59,7 +66,11 @@ fn run(c: &Case, dir: &std::path::Path) -> Result<(), String> {
 
 #[test]
 fn golden_cases() {
-    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/golden.tsv")).unwrap();
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/data/golden.tsv"
+    ))
+    .unwrap();
     let cases: Vec<Case> = text
         .lines()
         .enumerate()
@@ -69,26 +80,47 @@ fn golden_cases() {
             let args = if args.is_empty() {
                 Vec::new()
             } else {
-                args.split(|&b| b == 0).map(|a| String::from_utf8(a.to_vec()).unwrap()).collect()
+                args.split(|&b| b == 0)
+                    .map(|a| String::from_utf8(a.to_vec()).unwrap())
+                    .collect()
             };
-            Case { line: i + 1, pattern: unhex(f[0]), args, input: unhex(f[2]), status: f[3].to_string(), stdout: unhex(f[4]) }
+            Case {
+                line: i + 1,
+                pattern: unhex(f[0]),
+                args,
+                input: unhex(f[2]),
+                status: f[3].to_string(),
+                stdout: unhex(f[4]),
+            }
         })
         .collect();
     assert!(cases.len() > 500);
     let dir = std::env::temp_dir().join(format!("sfm_golden_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     let chunk = cases.len().div_ceil(threads);
     let failures: Vec<String> = std::thread::scope(|s| {
         let hs: Vec<_> = cases
             .chunks(chunk)
             .map(|part| {
                 let dir = dir.clone();
-                s.spawn(move || part.iter().filter_map(|c| run(c, &dir).err()).collect::<Vec<_>>())
+                s.spawn(move || {
+                    part.iter()
+                        .filter_map(|c| run(c, &dir).err())
+                        .collect::<Vec<_>>()
+                })
             })
             .collect();
         hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
     });
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(failures.is_empty(), "{} of {} golden cases differ:\n{}", failures.len(), cases.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {} golden cases differ:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
 }

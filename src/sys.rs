@@ -17,7 +17,14 @@ unsafe extern "C" {
     fn fwrite(p: *const c_void, size: usize, n: usize, f: *mut c_void) -> usize;
     fn signal(sig: c_int, handler: usize) -> usize;
     fn raise(sig: c_int) -> c_int;
-    fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
+    fn mmap(
+        addr: *mut c_void,
+        len: usize,
+        prot: c_int,
+        flags: c_int,
+        fd: c_int,
+        off: i64,
+    ) -> *mut c_void;
 }
 
 const SIGSEGV: c_int = 11;
@@ -72,7 +79,10 @@ impl Args {
             .collect();
         let mut ptrs: Vec<*mut c_char> = owned.iter().map(|c| c.as_ptr() as *mut c_char).collect();
         ptrs.push(std::ptr::null_mut());
-        Args { _owned: owned, ptrs }
+        Args {
+            _owned: owned,
+            ptrs,
+        }
     }
 
     pub fn argc(&self) -> c_int {
@@ -85,7 +95,13 @@ impl Args {
     }
 
     pub fn getopt(&mut self, optstring: &[u8]) -> c_int {
-        unsafe { getopt(self.argc(), self.ptrs.as_ptr(), optstring.as_ptr() as *const c_char) }
+        unsafe {
+            getopt(
+                self.argc(),
+                self.ptrs.as_ptr(),
+                optstring.as_ptr() as *const c_char,
+            )
+        }
     }
 }
 
@@ -144,7 +160,16 @@ pub fn map_zeroed(hint: usize, len: usize) -> *mut u8 {
     const MAP_ANON: c_int = 0x20;
     const MAP_PRIVATE: c_int = 0x2;
     const PROT_RW: c_int = 0x1 | 0x2;
-    let p = unsafe { mmap(hint as *mut c_void, len, PROT_RW, MAP_PRIVATE | MAP_ANON, -1, 0) };
+    let p = unsafe {
+        mmap(
+            hint as *mut c_void,
+            len,
+            PROT_RW,
+            MAP_PRIVATE | MAP_ANON,
+            -1,
+            0,
+        )
+    };
     if p as isize == -1 {
         std::process::abort();
     }

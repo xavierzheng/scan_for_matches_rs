@@ -1,0 +1,32 @@
+name: Release
+
+# Push a tag (for example 0.0.0) to build the macOS arm64 binary and make a
+# GitHub release with the matching CHANGELOG section.
+on:
+  push:
+    tags: ['*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: |
+          cargo build --release
+          cargo test --release
+      - name: Package
+        run: |
+          name=scan_for_matches-${GITHUB_REF_NAME}-macos-arm64
+          mkdir "$name"
+          cp target/release/scan_for_matches README.md README.original CHANGELOG.md TODO.md "$name"/
+          tar czf "$name.tar.gz" "$name"
+          # notes: the CHANGELOG section of this version
+          awk -v v="## ${GITHUB_REF_NAME} " 'index($0, v) == 1 {p=1; next} /^## / {p=0} p' CHANGELOG.md > notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" scan_for_matches-*-macos-arm64.tar.gz --title "$GITHUB_REF_NAME" --notes-file notes.md
