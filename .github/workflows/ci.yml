@@ -32,7 +32,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: CPU
-        run: lscpu | grep -E 'Model name|Flags' | sed 's/Flags:.*avx512f.*/Flags: (has avx512f)/'
+        run: |
+          lscpu | grep 'Model name'
+          if grep -q avx512f /proc/cpuinfo; then echo "AVX512: yes"; else echo "AVX512: no"; fi
       - name: Build
         run: cargo build --release
       - name: Original test suite
