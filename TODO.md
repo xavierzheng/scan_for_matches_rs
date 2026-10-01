@@ -11,6 +11,8 @@
         `p50` crash (Linux stdio writes 4096 bytes before the SIGSEGV,
         macOS none) and data byte 0xA5 (reads a byte of a heap pointer;
         Linux heap addresses differ);
+      - version 0.1.0 (no undefined behaviour left): all tests pass on
+        Linux x86_64 in CI;
       - not yet compared with the C program built on Linux (its memory
         layout, and so its undefined-behaviour results, differ from the
         macOS build).  Normal input is expected to match.
