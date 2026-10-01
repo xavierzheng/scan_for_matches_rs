@@ -85,3 +85,8 @@
       sequences without a hit" and `-m N` as the hit limit.  Version 0.1.0
       follows the code.  Decide which meaning to keep, and correct the
       README or the code.
+- [ ] The inexact matcher always takes a matching character and never
+      tries to skip it with an insert/delete, so some valid alignments
+      within the mismatch/insert/delete limits are not found (for example
+      when an early match forces a later failure).  The original works the
+      same way; a complete search would change results and speed.
