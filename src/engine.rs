@@ -116,6 +116,34 @@ const T_BIT: u8 = 0x08;
 const KNOWN_CHAR: [u8; 16] = [0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
 const KNOWN_CHAR_INDEX: [i8; 16] = [-1, 0, 1, -1, 2, -1, -1, -1, 3, -1, -1, -1, -1, -1, -1, -1];
 
+/// Field of a range unit (free in the C union for ranges): the unit after
+/// it, when gap lengths may be skipped (see `next_start`); else 0.
+const O_SKIP: i64 = 72;
+/// k-mer length of the per-record position index
+const KIDX_K: usize = 5;
+/// below this many candidate positions a plain scan is used
+const SCAN_LIMIT: i64 = 48;
+
+/// Positions of every k-mer of plain bases (A, C, G, T) in the coded
+/// sequence: `pos[starts[key]..starts[key + 1]]`, in increasing order.
+struct KIndex {
+    generation: u64,
+    starts: Vec<u32>,
+    pos: Vec<u32>,
+}
+
+/// 2-bit value of a plain base code, or None.
+#[inline(always)]
+fn base2(c: u8) -> Option<u32> {
+    match c & 15 {
+        1 => Some(0),
+        2 => Some(1),
+        4 => Some(2),
+        8 => Some(3),
+        _ => None,
+    }
+}
+
 /// rev_compl_data(): one code of the reverse complement, or with a rule
 /// set the index of the base in the rule table.
 #[inline(always)]
@@ -745,6 +773,12 @@ pub struct Engine {
     end_srch: i64,
     /// scratch for collect_hits (C: revhits[MAX_PUNITS] on the stack)
     revhits: Vec<i64>,
+    /// counts changes of the coded sequence (for the k-mer index)
+    cd_gen: u64,
+    /// k-mer index of the coded sequence, built when first needed
+    kidx: Option<KIndex>,
+    /// scratch: masks of the unit after a range
+    masks: Vec<u8>,
     /// punit_to_code for indexes 0..127 (never overwritten)
     p2c_lo: [u8; 128],
 }
@@ -789,6 +823,9 @@ impl Engine {
             br1: 0,
             end_srch: 0,
             revhits: Vec::with_capacity(256),
+            cd_gen: 0,
+            kidx: None,
+            masks: Vec::new(),
             p2c_lo: [0; 128],
         };
         for (i, v) in KNOWN_CHAR.iter().enumerate() {
@@ -939,6 +976,7 @@ impl Engine {
 
     /// comp_data(data, cdata): translate characters to codes, stop at NUL.
     pub fn comp_data(&mut self, data: &Buf) {
+        self.cd_gen += 1;
         let mut k = 0usize;
         loop {
             let c = data.v[k];
@@ -956,6 +994,7 @@ impl Engine {
     /// Pattern letters are upper case, so the data is matched in upper
     /// case too (the output shows the data as it is).
     pub fn copy_data(&mut self, data: &Buf) {
+        self.cd_gen += 1;
         let mut k = 0usize;
         loop {
             let c = data.v[k].to_ascii_uppercase();
@@ -1629,6 +1668,229 @@ impl Engine {
         assigned
     }
 
+    /// Mark the range units whose following unit only checks a fixed string
+    /// at one position (an exact word, an exact reverse complement or an
+    /// exact repeat).  Trying a gap length where that unit fails changes
+    /// nothing else, so such lengths can be skipped (`next_start`).  Not
+    /// used when a unit may read a name matched in an earlier attempt.
+    fn setup_skips(&mut self, mut pu: i64, on: bool, depth: u32) {
+        if depth > 1_000_000 {
+            return;
+        }
+        let m = self.mem;
+        while pu != 0 {
+            match self.r32(pu + O_TYPE) {
+                RANGE_PUNIT => {
+                    let n = Self::next_punit::<Checked>(m, pu);
+                    let target = if on && n != 0 && self.skippable(n, pu) {
+                        n
+                    } else {
+                        0
+                    };
+                    self.w64(pu + O_SKIP, target);
+                }
+                OR_PUNIT => {
+                    let (a, b) = (self.r64(pu + O_U0), self.r64(pu + O_U8));
+                    self.setup_skips(a, on, depth + 1);
+                    self.setup_skips(b, on, depth + 1);
+                }
+                _ => {}
+            }
+            pu = self.r64(pu + O_NXT);
+        }
+    }
+
+    /// Can lengths of the range `range` be skipped when `n` follows it?
+    /// `n` must check a fixed string: not one taken from the range itself
+    /// (its text changes with the gap length).
+    fn skippable(&self, n: i64, range: i64) -> bool {
+        if self.r32(n + O_ANCH) == 0 {
+            return false;
+        }
+        let t = self.r32(n + O_TYPE);
+        if (t == COMPL_PUNIT || t == REPEAT_PUNIT) && self.names(self.r32(n + O_U12)) == range {
+            return false;
+        }
+        let no_errors = |pu: i64| {
+            self.r32(pu + O_U0) == 0 && self.r32(pu + O_U4) == 0 && self.r32(pu + O_U8) == 0
+        };
+        match self.r32(n + O_TYPE) {
+            EXACT_PUNIT => self.r32(n + O_U0) >= 1,
+            COMPL_PUNIT => self.r32(n + O_U16) == -1 && no_errors(n),
+            REPEAT_PUNIT => no_errors(n),
+            _ => false,
+        }
+    }
+
+    /// The masks the unit `n` checks at its position: data code `d` (low
+    /// nibble) matches mask `k` when `d` is one plain base and `d` is in
+    /// the mask.  `Some(None)`: the unit matches anywhere (empty capture);
+    /// `None`: it never matches.
+    fn unit_masks(&mut self, n: i64) -> Option<Option<()>> {
+        let m = self.mem;
+        let mut masks = std::mem::take(&mut self.masks);
+        masks.clear();
+        let r = match self.r32(n + O_TYPE) {
+            EXACT_PUNIT => {
+                let code = self.r64(n + O_U8);
+                for k in 0..self.r32(n + O_U0) as i64 {
+                    masks.push(m.rb(code + k) & 15);
+                }
+                Some(Some(()))
+            }
+            COMPL_PUNIT => {
+                let pu1 = m.names(self.r32(n + O_U12));
+                let (p1, ln) = (self.r64(pu1 + O_HIT), self.r32(pu1 + O_MLEN) as i64);
+                let mut ok = Some(Some(()));
+                for k in 0..ln {
+                    let c = m.rb(p1 + ln - 1 - k);
+                    if KNOWN_CHAR[(c & 15) as usize] == 0 {
+                        ok = None; // the C loop fails at this character
+                        break;
+                    }
+                    masks.push((c >> 4) & 15);
+                }
+                if ln == 0 { Some(None) } else { ok }
+            }
+            _ => {
+                // REPEAT
+                let pu1 = m.names(self.r32(n + O_U12));
+                let (p1, ln) = (self.r64(pu1 + O_HIT), self.r32(pu1 + O_MLEN) as i64);
+                for k in 0..ln {
+                    masks.push(m.rb(p1 + k) & 15);
+                }
+                if ln == 0 { Some(None) } else { Some(Some(())) }
+            }
+        };
+        self.masks = masks;
+        r
+    }
+
+    /// Does the data at `x` match the masks (and end by `er`)?
+    #[inline(always)]
+    fn masks_match_at(&self, x: i64, er: i64) -> bool {
+        let n = self.masks.len() as i64;
+        if x + n - 1 > er {
+            return false;
+        }
+        let m = self.mem;
+        self.masks.iter().enumerate().all(|(k, &mk)| {
+            let d = m.rb(x + k as i64) & 15;
+            KNOWN_CHAR[d as usize] != 0 && (d & mk) == d
+        })
+    }
+
+    /// The first position in `xlo..=xhi` where the unit `n` (marked by
+    /// setup_skips) can match: the same position the C search reaches by
+    /// trying every gap length.
+    fn next_start(&mut self, n: i64, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
+        if xlo > xhi {
+            return None;
+        }
+        match self.unit_masks(n) {
+            None => return None,
+            Some(None) => return Some(xlo),
+            Some(Some(())) => {}
+        }
+        let len = self.masks.len();
+        let key = if len >= KIDX_K && xhi - xlo >= SCAN_LIMIT {
+            let mut key = 0u32;
+            let mut ok = true;
+            for &mk in &self.masks[..KIDX_K] {
+                match base2(mk) {
+                    Some(b) => key = key << 2 | b,
+                    None => ok = false,
+                }
+            }
+            if ok { Some(key) } else { None }
+        } else {
+            None
+        };
+        let Some(key) = key else {
+            return (xlo..=xhi).find(|&x| self.masks_match_at(x, er));
+        };
+        self.build_kidx(er);
+        let base = self.mem.cd as i64;
+        let idx = self.kidx.as_ref().unwrap();
+        let list =
+            &idx.pos[idx.starts[key as usize] as usize..idx.starts[key as usize + 1] as usize];
+        let lo = (xlo - base) as u32;
+        let first = list.partition_point(|&p| p < lo);
+        for &p in &list[first..] {
+            let x = base + p as i64;
+            if x > xhi {
+                break;
+            }
+            if self.masks_match_at(x, er) {
+                return Some(x);
+            }
+        }
+        None
+    }
+
+    /// Build the k-mer index of the current coded sequence (up to `er`).
+    fn build_kidx(&mut self, er: i64) {
+        if self
+            .kidx
+            .as_ref()
+            .is_some_and(|k| k.generation == self.cd_gen)
+        {
+            return;
+        }
+        let m = self.mem;
+        let base = m.cd as i64;
+        let n = (er - base + 1).max(0) as usize;
+        let seq = unsafe { std::slice::from_raw_parts(m.cd as *const u8, n) };
+        let nkeys = 1usize << (2 * KIDX_K);
+        let mask = (nkeys - 1) as u32;
+        let mut idx = self.kidx.take().unwrap_or(KIndex {
+            generation: 0,
+            starts: Vec::new(),
+            pos: Vec::new(),
+        });
+        idx.starts.clear();
+        idx.starts.resize(nkeys + 1, 0);
+        // pass 1: count, pass 2: fill
+        for pass in 0..2 {
+            let mut key = 0u32;
+            let mut run = 0usize;
+            for (i, &c) in seq.iter().enumerate() {
+                match base2(c) {
+                    Some(b) => {
+                        key = (key << 2 | b) & mask;
+                        run += 1;
+                    }
+                    None => run = 0,
+                }
+                if run >= KIDX_K {
+                    let at = i + 1 - KIDX_K;
+                    if pass == 0 {
+                        idx.starts[key as usize + 1] += 1;
+                    } else {
+                        let slot = &mut idx.starts[key as usize];
+                        idx.pos[*slot as usize] = at as u32;
+                        *slot += 1;
+                    }
+                }
+            }
+            if pass == 0 {
+                for k in 0..nkeys {
+                    idx.starts[k + 1] += idx.starts[k];
+                }
+                idx.pos.clear();
+                idx.pos.resize(idx.starts[nkeys] as usize, 0);
+            } else {
+                // starts[k] now holds the end of bucket k: shift back
+                for k in (0..nkeys).rev() {
+                    idx.starts[k + 1] = idx.starts[k];
+                }
+                idx.starts[0] = 0;
+            }
+        }
+        idx.generation = self.cd_gen;
+        self.kidx = Some(idx);
+    }
+
     /// Name `n` is defined, and following the names it refers to does not
     /// come back to a name already seen.
     fn name_ok(&self, n: i32) -> bool {
@@ -1690,6 +1952,8 @@ impl Engine {
                     return 0;
                 }
                 self.set_anchors(self.mem.sa(A_PU_S), 0);
+                let skip = self.seq_type == DNA && !self.uses_earlier_state();
+                self.setup_skips(self.mem.sa(A_PU_S), skip, 0);
                 self.w64(self.mem.sa(A_AD_PU_S), self.mem.sa(A_PU_S));
                 self.max_mats(self.mem.sa(A_PU_S))
             }
@@ -2307,6 +2571,31 @@ impl Engine {
                                     push_br!();
                                     let mn = g32!(O_U0);
                                     s32!(O_U8, mn.wrapping_add(1));
+                                    let n = if P::CHECKED { 0 } else { g64!(O_SKIP) };
+                                    if n != 0 {
+                                        // go straight to the first gap length
+                                        // where the next unit can match
+                                        let hit = g64!(O_HIT);
+                                        // the first length (min) is always
+                                        // tried, then min+1 ..= min+width
+                                        let lmax = (mn as i64 + g32!(O_U4) as i64)
+                                            .min(er - hit + 1)
+                                            .max(mn as i64);
+                                        match self.next_start(n, sr, hit + lmax, er) {
+                                            Some(x) => {
+                                                s32!(O_U8, (x - hit + 1) as i32);
+                                                sr = x;
+                                            }
+                                            None => {
+                                                // every length fails: as after trying them all
+                                                s32!(
+                                                    O_U8,
+                                                    (mn as i64 + g32!(O_U4) as i64 + 1) as i32
+                                                );
+                                                break 'tryl;
+                                            }
+                                        }
+                                    }
                                 }
                                 success!('tryl, 'main);
                             } else {
@@ -2521,6 +2810,36 @@ impl Engine {
                         let nx = g32!(O_U8);
                         let min = g32!(O_U0);
                         let width = g32!(O_U4);
+                        let n = if P::CHECKED { 0 } else { g64!(O_SKIP) };
+                        if n != 0 {
+                            // same as below, but only gap lengths where the
+                            // next unit can match are tried
+                            let mut hit = sr;
+                            let mut from = nx as i64;
+                            loop {
+                                let mut lmax = (min as i64 + width as i64).min(er - hit + 1);
+                                if from == min as i64 {
+                                    // a new start: its first length is
+                                    // always tried
+                                    lmax = lmax.max(min as i64);
+                                }
+                                if let Some(x) = self.next_start(n, hit + from, hit + lmax, er) {
+                                    s64!(O_HIT, hit);
+                                    s32!(O_U8, (x - hit + 1) as i32);
+                                    sr = x;
+                                    br = cr;
+                                    success!('main, 'main);
+                                }
+                                // all lengths fail: next start, if unanchored
+                                hit += 1;
+                                s64!(O_HIT, hit);
+                                if hit + min as i64 - 1 <= er && g32!(O_ANCH) == 0 {
+                                    from = min as i64;
+                                } else {
+                                    continue 'backl;
+                                }
+                            }
+                        }
                         if nx <= min.wrapping_add(width) && sr + nx as i64 - 1 <= er {
                             s32!(O_U8, nx.wrapping_add(1));
                             sr += nx as i64;
