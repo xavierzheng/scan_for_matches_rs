@@ -348,7 +348,6 @@ fn real_main() {
         if body.len() as i64 >= engine::ALLOC_LEN {
             sys::segv();
         }
-        data.reserve_len(body.len() + 1);
         data.v[..body.len()].copy_from_slice(&body);
         data.v[body.len()] = 0;
         let ln = body.iter().position(|&b| b == 0).unwrap_or(body.len());

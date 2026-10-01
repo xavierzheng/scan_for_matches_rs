@@ -41,8 +41,11 @@ def rnd_seq(r, protein):
                 out.append(r.choice(DNA_AMB))
             elif x < 0.97:
                 out.append(r.choice(" \n"))
-            else:
+            elif x < 0.995:
                 out.append(r.choice("x-*.\r\t0"))
+            else:
+                b = r.choice([0x80, 0x9f, 0xa0, 0xa1, 0xa2, 0xa5, 0xa8, 0xc3, 0xff, 0x01, 0x00])
+                out.append(chr(b))
     # occasionally build an internal repeat / hairpin so complex patterns hit
     s = "".join(out)
     if s and r.random() < 0.5 and not protein:
@@ -182,10 +185,38 @@ class Pat:
         return txt
 
 
+def stress_pattern(r, protein):
+    """Patterns near or past the C program's fixed limits."""
+    k = r.choice(["many", "longexact", "longstem", "names", "weights", "deepor"])
+    if k == "many":
+        n = r.choice([95, 98, 99, 100, 101, 102, 120])
+        unit = r.choice(["0...1", "1...1", "N" if not protein else "X", "A"])
+        return " ".join([unit] * n)
+    if k == "longexact":
+        n = r.choice([300, 590, 598, 600, 601, 650])
+        w = "".join(r.choice("acgtn" if not protein else "ACDX") for _ in range(n))
+        tail = r.choice(["", " {(10,10,10,10)} > 5", " 0...3 {(1,2,3,4),(4,3,2,1)} > 3"])
+        return w + tail
+    if k == "longstem" and not protein:
+        L = r.choice([60, 99, 100, 101, 130])
+        return "p1=%d...%d 2...6 ~p1%s" % (L, L, r.choice(["", "[1,0,0]", "[0,1,0]", "[2,1,1]"]))
+    if k == "names":
+        n = r.choice([46, 47, 48, 49, 50])
+        return "p%d=2...3 0...3 %s" % (n, r.choice(["p%d" % n, "~p%d" % n, "<p%d" % n, "p%d[1,0,0]" % n])) if not protein else "p%d=2...3 p%d" % (n, n)
+    if k == "weights":
+        L = r.randint(1, 30)
+        tup = 4 if not protein else r.choice([4, 20, 21])
+        vecs = ["(" + ",".join(str(r.randint(-50, 100)) for _ in range(tup)) + ")" for _ in range(L)]
+        return "{%s} > %d" % (",".join(vecs), r.randint(0, 40 * L))
+    d = r.choice([5, 20, 40, 60])
+    return "(A | " * d + "C" + ")" * d
+
+
 def run(binary, args, pat_path, inp):
     try:
         p = subprocess.run([binary] + args + [pat_path], input=inp, capture_output=True, timeout=TIMEOUT)
-        return (p.returncode, p.stdout, p.stderr)
+        # getopt prints argv[0]; the two binaries live in different places
+        return (p.returncode, p.stdout, p.stderr.replace(binary.encode(), b"PROG"))
     except subprocess.TimeoutExpired:
         return ("TIMEOUT", b"", b"")
 
@@ -193,7 +224,7 @@ def run(binary, args, pat_path, inp):
 def one(case):
     r = random.Random(SEED * 1000003 + case)
     protein = r.random() < 0.25
-    pat = Pat(r, protein).build()
+    pat = Pat(r, protein).build() if r.random() > 0.15 else stress_pattern(r, protein)
     fasta = rnd_fasta(r, protein)
     args = []
     if protein:
@@ -202,15 +233,26 @@ def one(case):
         args.append("-c")
     if r.random() < 0.3:
         args += ["-o", "1"]
+    if r.random() < 0.02:
+        args += [r.choice(["-x", "-n", "-m", "--", "-o"])]
     with tempfile.TemporaryDirectory() as d:
         pp = os.path.join(d, "pat")
-        with open(pp, "w") as f:
-            f.write(pat + "\n")
-        a = run(C_BIN, args, pp, fasta.encode())
-        b = run(R_BIN, args, pp, fasta.encode())
+        with open(pp, "wb") as f:
+            f.write(pat.encode("latin1") + b"\n")
+        a = run(C_BIN, args, pp, fasta.encode("latin1"))
+        b = run(R_BIN, args, pp, fasta.encode("latin1"))
     if a[0] == "TIMEOUT" and b[0] == "TIMEOUT":
         return (case, "both-timeout", pat, args, fasta, a, b)
     if a != b:
+        # Is the C program itself stable on this input?  Some undefined
+        # behaviour in C depends on address-space randomisation.
+        with tempfile.TemporaryDirectory() as d:
+            pp = os.path.join(d, "pat")
+            with open(pp, "wb") as f:
+                f.write(pat.encode("latin1") + b"\n")
+            again = {run(C_BIN, args, pp, fasta.encode("latin1")) for _ in range(6)}
+        if len(again | {a}) > 1:
+            return (case, "C-unstable", pat, args, fasta, a, b)
         return (case, "DIFF", pat, args, fasta, a, b)
     return (case, "ok", pat, args, fasta, a, b)
 
