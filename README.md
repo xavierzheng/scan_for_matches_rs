@@ -78,7 +78,9 @@ buffer bounds. So results also match for over-limit patterns, `p50`/`r50`
 **Reference build.** Where C behaviour depends on memory layout, the port
 follows the original built on macOS arm64 with Apple clang:
 `cc -std=gnu89 -O2` (the README's `-O` and the Makefile's `-g -O2` give the
-same layout). `tests/build_reference.sh` builds it.
+same results; an unoptimised `-O0` build lays out its stack differently and
+gives other results for over-limit patterns). `tests/build_reference.sh`
+builds it.
 
 **What cannot be identical.** In a few undefined-behaviour cases the C
 program itself gives different results from run to run, because they depend
