@@ -77,3 +77,11 @@
 - [ ] In an alternative `( | )`, the second alternative is not retried at
       later positions (dead branch for `alt == 2` in BACKTRACK); scanning
       relies on the first unit inside the alternative.
+- [ ] `-o` (overlapping hits) works on the forward strand only: with
+      `-c`, hits on the reverse strand never overlap (the C code always
+      uses `cont_match` there).  The original README does not say this.
+- [ ] `-n`: the original README says `-n 10` limits the output to 10 hits,
+      but the C code (and its usage text) uses `-n N` as "stop after N
+      sequences without a hit" and `-m N` as the hit limit.  Version 0.1.0
+      follows the code.  Decide which meaning to keep, and correct the
+      README or the code.
