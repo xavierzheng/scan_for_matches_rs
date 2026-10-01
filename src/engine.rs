@@ -25,51 +25,54 @@
 //! before (see `Pol`); an access outside these blocks ends the program the
 //! way the C program ends (SIGSEGV / SIGBUS).
 
-use crate::sys::{abort, segv, sigbus};
+use crate::sys::{segv, sigbus};
 
 pub const PEPTIDE: i32 = 1;
 pub const DNA: i32 = 2;
 
-#[allow(dead_code)]
-pub const MAX_SEQ_LEN: usize = 250_000_000;
-/// malloc(MAX_SEQ_LEN+1) is rounded up to whole 16 KiB pages; bytes up to
-/// this size are addressable, the next one faults.
-pub const ALLOC_LEN: i64 = 250_003_456;
-/// Bytes just before a buffer are mapped (they read as zero in the
-/// reference build); the second buffer starts this far after the first.
-const LOW_SLACK: i64 = 1_671_168;
+/// Longest sequence: lengths and positions are C `int`s.
+pub const MAX_SEQ_LEN: usize = i32::MAX as usize - 2;
+/// Address space reserved for the coded sequence buffer (memory is only
+/// used for the pages that are touched).
+const CD_CAP: i64 = 1 << 32;
+/// Zero bytes reserved before the coded sequence buffer.
+const LOW_SLACK: i64 = 1 << 20;
+/// Names p0..p50 and rule sets r0..r50 (the C program accepts 50 but has
+/// only 50 entries).
 const MAX_NAMES: i32 = 50;
+const N_NAMES: i64 = MAX_NAMES as i64 + 1;
 
-// ---- address map ---------------------------------------------------------
-// Addresses of the reference binary (unslid).  The emulated static block is
-// placed at a host address with the same low 14 bits (16 KiB alignment), so
-// pointer bytes that the C program can observe stay the same; the higher
-// bits differ from run to run in C as well (address-space randomisation).
+// ---- layout of the static block -----------------------------------------
+// The C program's globals and pattern arrays, with room for every pattern
+// that fits on a pattern line (31 999 characters): one unit needs at least
+// one character, a code byte or a weight needs at least one character.
 const REF_S: i64 = 0x1_0000_c000;
-const REF_S_END: i64 = 0x1_0002_8000;
+const A_KNOWN_CHAR: i64 = REF_S;
+const A_KNOWN_CHAR_INDEX: i64 = REF_S + 0x10;
+const A_INITIALIZED: i64 = REF_S + 0x100;
+const A_AD_PU_S: i64 = REF_S + 0x108;
+const A_CODE_TO_PUNIT: i64 = REF_S + 0x200;
+const A_NAMES: i64 = REF_S + 0x300; // 51 pointers
+const A_PAST_LAST: i64 = A_NAMES + 8 * N_NAMES + 8;
+const A_SEQ_TYPE: i64 = A_PAST_LAST + 8;
+const A_P2C: i64 = REF_S + 0x600;
+const A_RULE_SETS: i64 = REF_S + 0x700; // 51 pointers
+const A_START_SRCH: i64 = A_RULE_SETS + 8 * N_NAMES + 8;
+const A_PU_S: i64 = REF_S + 0x1000;
+/// pattern unit slots (C: 100)
+const N_SLOTS: i64 = 32_768;
+const A_CV: i64 = A_PU_S + N_SLOTS * 264;
+/// pattern code bytes (C: 600)
+const CV_LEN: i64 = 1 << 17;
+const A_IV: i64 = A_CV + CV_LEN;
+/// weights (C: 10 500)
+const IV_LEN: i64 = 1 << 16;
+const REF_S_END: i64 = A_IV + 4 * IV_LEN;
 const S_LEN: usize = (REF_S_END - REF_S) as usize;
-/// __LINKEDIT (read only) follows the static block
+/// read-only page after the block
 const LINKEDIT_LEN: usize = 0x4000;
 const PAGE: usize = 0x4000;
 
-const A_KNOWN_CHAR: i64 = 0x1_0000_c000;
-const A_KNOWN_CHAR_INDEX: i64 = 0x1_0000_c010;
-const A_INITIALIZED: i64 = 0x1_0000_c100;
-const A_AD_PU_S: i64 = 0x1_0000_c108;
-const A_CODE_TO_PUNIT: i64 = 0x1_0000_c200;
-const A_NAMES: i64 = 0x1_0000_c310;
-const A_PAST_LAST: i64 = 0x1_0000_c4a0;
-const A_SEQ_TYPE: i64 = 0x1_0000_c4a8;
-const A_P2C: i64 = 0x1_0000_c500;
-const A_RULE_SETS: i64 = 0x1_0000_c600;
-const A_START_SRCH: i64 = 0x1_0000_c790;
-const A_PU_S: i64 = 0x1_0000_c798;
-const A_CV: i64 = 0x1_0001_2eb8;
-const A_IV: i64 = 0x1_0001_3110;
-
-/// In the reference runs the coded sequence buffer starts at an address
-/// whose low 24 bits are these; the emulated one does too.
-const CDATA_LOW_BITS: i64 = 0x40_8000;
 /// at most one 16-byte block per rule set r0..r50
 const HEAP_CAP: usize = 16 * 64;
 
@@ -122,36 +125,48 @@ const T_BIT: u8 = 0x08;
 const KNOWN_CHAR: [u8; 16] = [0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
 const KNOWN_CHAR_INDEX: [i8; 16] = [-1, 0, 1, -1, 2, -1, -1, -1, 3, -1, -1, -1, -1, -1, -1, -1];
 
-/// Fixed stack arrays of the C code; overrunning them trips the stack
-/// protector (abort) in the reference build.
-const MAX_PUNITS: usize = 100; // revhits[] in pattern_match
-const MAX_CODES: i32 = 100; // result[] in loose_match
-const LOOSE_STACK_SAFE: i32 = 102; // stack[102] reaches the canary
+/// rev_compl_data(): one code of the reverse complement, or with a rule
+/// set the index of the base in the rule table.
+#[inline(always)]
+fn compl_code(i: u32, rule_set: i32) -> u8 {
+    if rule_set == -1 {
+        ((i >> 4) & 15) as u8
+    } else {
+        ((KNOWN_CHAR_INDEX[(i & 15) as usize] as i32) << 2) as u8
+    }
+}
 
-/// A byte buffer that the C code mallocs once (MAX_SEQ_LEN+1 bytes, which
-/// the allocator rounds up to ALLOC_LEN) and reuses for every sequence:
+/// Size of loose_match's on-stack buffer for the complemented operand
+/// (longer operands use the heap).
+const MAX_CODES: i32 = 100;
+
+/// The sequence buffer (C: `data`).  It is reused for every sequence;
 /// bytes past the current sequence keep what an earlier, longer sequence
-/// left there.  The zeroed allocation only uses memory for touched pages.
+/// left there, as in C.
 pub struct Buf {
     pub v: Vec<u8>,
 }
 
 impl Buf {
     pub fn new() -> Buf {
-        Buf {
-            v: vec![0u8; ALLOC_LEN as usize],
-        }
+        Buf { v: Vec::new() }
     }
 
-    /// None when the C program would fault on this read.
+    /// Store `body` followed by a NUL byte.
+    pub fn store(&mut self, body: &[u8]) {
+        if self.v.len() < body.len() + 1 {
+            self.v.resize(body.len() + 1, 0);
+        }
+        self.v[..body.len()].copy_from_slice(body);
+        self.v[body.len()] = 0;
+    }
+
     #[inline(always)]
-    pub fn try_get(&self, off: i64) -> Option<u8> {
-        if (off as u64) < ALLOC_LEN as u64 {
-            Some(self.v[off as usize])
-        } else if (-LOW_SLACK..0).contains(&off) {
-            Some(0)
+    pub fn get(&self, off: i64) -> u8 {
+        if off >= 0 && (off as usize) < self.v.len() {
+            self.v[off as usize]
         } else {
-            None
+            0
         }
     }
 }
@@ -222,7 +237,7 @@ struct SlowMem {
 #[inline(always)]
 fn rb_full(sm: &SlowMem, a: i64) -> u8 {
     let o = a.wrapping_sub(sm.cd as i64);
-    if (-LOW_SLACK..ALLOC_LEN).contains(&o) {
+    if (-LOW_SLACK..CD_CAP).contains(&o) {
         // the bytes before the buffer are zero in our allocation
         return unsafe { *(a as *const u8) };
     }
@@ -254,7 +269,7 @@ fn wb_full(sm: &SlowMem, a: i64, v: u8) {
         return;
     }
     let o = a.wrapping_sub(sm.cd as i64) as u64;
-    if o < ALLOC_LEN as u64 {
+    if o < CD_CAP as u64 {
         unsafe { *(a as *mut u8) = v };
         return;
     }
@@ -320,7 +335,7 @@ impl M {
     #[inline(always)]
     fn rb(self, a: i64) -> u8 {
         let o = a.wrapping_sub(self.cd as i64) as u64;
-        if o < ALLOC_LEN as u64 {
+        if o < CD_CAP as u64 {
             return unsafe { *(a as *const u8) };
         }
         let o = a.wrapping_sub(self.s as i64) as u64;
@@ -440,7 +455,7 @@ impl M {
     #[inline(always)]
     fn cd_ok(self, a: i64, n: i64) -> bool {
         let o = a.wrapping_sub(self.cd as i64);
-        o >= 0 && n >= 0 && o.wrapping_add(n) <= ALLOC_LEN
+        o >= 0 && n >= 0 && o.wrapping_add(n) <= CD_CAP
     }
 
     #[inline(always)]
@@ -586,6 +601,10 @@ fn misinsdel(l: &[u8], p: usize) -> Option<(i32, i32, i32, usize)> {
     if at(l, p) != b']' {
         return None;
     }
+    // negative counts are not allowed (C treats them as "no limit")
+    if mis < 0 || ins < 0 || del < 0 {
+        return None;
+    }
     Some((mis, ins, del, p + 1))
 }
 
@@ -613,6 +632,10 @@ fn range_pat(l: &[u8], p: usize) -> Option<(i32, i32, usize)> {
     let p = elipses(l, p)?;
     let p = ws(l, p);
     let (max, p) = num(l, p)?;
+    // negative lengths are not allowed (C reads outside the sequence)
+    if min < 0 || max < 0 {
+        return None;
+    }
     Some((min, max, p))
 }
 
@@ -663,7 +686,7 @@ pub fn compl(c: u8) -> u8 {
         b'R' => b'Y',
         b'w' => b'w',
         b'W' => b'W',
-        b's' => b'S',
+        b's' => b's',
         b'S' => b'S',
         b'y' => b'r',
         b'Y' => b'R',
@@ -713,8 +736,6 @@ pub struct Engine {
     /// malloc'd rule-set blocks (accessed through `mem`)
     _heap: Vec<u8>,
     slow: Box<SlowMem>,
-    /// the coded sequence, cdata (accessed through `mem`)
-    _cdata: Buf,
     mem: M,
     /// punit_sequence_type (also stored in `s`)
     seq_type: i32,
@@ -732,28 +753,17 @@ pub struct Engine {
 
 impl Engine {
     pub fn new() -> Engine {
-        // static block + __LINKEDIT, 16 KiB aligned like the C segment and,
-        // if possible, at an address of the same form (0x1_xxxx_c000)
-        let s_ptr = crate::sys::map_zeroed(0x1_00f0_0000, S_LEN + LINKEDIT_LEN + 2 * PAGE);
+        // static block followed by a read-only page
+        let s_ptr = crate::sys::map_zeroed(0, S_LEN + LINKEDIT_LEN + 2 * PAGE);
         let s_ptr = {
             let a = s_ptr as usize;
             unsafe { s_ptr.add((PAGE - a % PAGE) % PAGE) }
         };
         SB.store(s_ptr as i64, std::sync::atomic::Ordering::Relaxed);
         let mut heap = vec![0u8; HEAP_CAP];
-        // sequence buffer: LOW_SLACK zero bytes before it, and a start
-        // address with the same low 24 bits as in the reference runs
-        let mut cdata = Buf {
-            v: vec![0u8; LOW_SLACK as usize + ALLOC_LEN as usize + (1 << 24)],
-        };
-        let cd_ptr = {
-            let p = cdata.v.as_mut_ptr();
-            let lo = p as i64 + LOW_SLACK;
-            let mut c = (lo & !0xFF_FFFF) | CDATA_LOW_BITS;
-            if c < lo {
-                c += 1 << 24;
-            }
-            unsafe { p.add((c - p as i64) as usize) }
+        // coded sequence buffer, with zero bytes before it
+        let cd_ptr = unsafe {
+            crate::sys::map_zeroed(0, (LOW_SLACK + CD_CAP) as usize).add(LOW_SLACK as usize)
         };
         let slow = Box::new(SlowMem {
             s: s_ptr,
@@ -770,7 +780,6 @@ impl Engine {
         let mut e = Engine {
             _heap: heap,
             slow,
-            _cdata: cdata,
             mem,
             seq_type: 0,
             pup: sa(A_PU_S),
@@ -853,11 +862,9 @@ impl Engine {
     /// punit_to_code[c] where C subscripts with a signed char.
     #[inline(always)]
     fn p2c(&self, c: u8) -> u8 {
-        if c < 0x80 {
-            self.p2c_lo[c as usize]
-        } else {
-            self.rb(sa(A_P2C) + (c as i8) as i64)
-        }
+        // bytes >= 0x80 are not nucleotides (C indexes the table with a
+        // signed char and reads other variables)
+        if c < 0x80 { self.p2c_lo[c as usize] } else { 0 }
     }
 
     fn build_conversion_tables(&mut self) {
@@ -938,9 +945,6 @@ impl Engine {
                 break;
             }
             let code = self.p2c(c);
-            if k as i64 >= ALLOC_LEN - 1 {
-                segv();
-            }
             unsafe { *self.mem.cd.add(k) = code };
             k += 1;
         }
@@ -948,10 +952,12 @@ impl Engine {
     }
 
     /// strcpy(cdata, data)
+    /// Pattern letters are upper case, so the data is matched in upper
+    /// case too (the output shows the data as it is).
     pub fn copy_data(&mut self, data: &Buf) {
         let mut k = 0usize;
         loop {
-            let c = data.v[k];
+            let c = data.v[k].to_ascii_uppercase();
             unsafe { *self.mem.cd.add(k) = c };
             if c == 0 {
                 break;
@@ -1544,6 +1550,54 @@ impl Engine {
         }
     }
 
+    /// Every name and rule set that the pattern uses is defined, and no
+    /// name refers to itself through other names (`p1=~p1`).  The C program
+    /// crashes on these patterns.
+    fn refs_ok(&self, mut pu: i64) -> bool {
+        while pu != 0 {
+            let ok = match self.r32(pu + O_TYPE) {
+                COMPL_PUNIT => {
+                    let rs = self.r32(pu + O_U16);
+                    self.name_ok(self.r32(pu + O_U12))
+                        && (rs == -1 || self.r64(sa(A_RULE_SETS) + 8 * rs as i64) != 0)
+                }
+                REPEAT_PUNIT | INV_REP_PUNIT => self.name_ok(self.r32(pu + O_U12)),
+                LLIM_PUNIT => {
+                    let v = pu + O_U0;
+                    (1..=self.r32(v)).all(|i| self.names(self.r32(v + 4 * i as i64)) != 0)
+                }
+                OR_PUNIT => self.refs_ok(self.r64(pu + O_U0)) && self.refs_ok(self.r64(pu + O_U8)),
+                _ => true,
+            };
+            if !ok {
+                return false;
+            }
+            pu = self.r64(pu + O_NXT);
+        }
+        true
+    }
+
+    /// Name `n` is defined, and following the names it refers to does not
+    /// come back to a name already seen.
+    fn name_ok(&self, n: i32) -> bool {
+        let mut seen = [false; N_NAMES as usize];
+        let mut n = n;
+        loop {
+            if seen[n as usize] {
+                return false;
+            }
+            seen[n as usize] = true;
+            let pu = self.names(n);
+            if pu == 0 {
+                return false;
+            }
+            match self.r32(pu + O_TYPE) {
+                COMPL_PUNIT | REPEAT_PUNIT | INV_REP_PUNIT => n = self.r32(pu + O_U12),
+                _ => return true,
+            }
+        }
+    }
+
     fn max_mats(&self, mut pu: i64) -> i32 {
         let mut sum: i32 = 0;
         while pu != 0 {
@@ -1562,7 +1616,7 @@ impl Engine {
         if self.r32(sa(A_INITIALIZED)) == 0 {
             self.build_conversion_tables();
         }
-        for i in 0..MAX_NAMES as i64 {
+        for i in 0..N_NAMES {
             self.w64(sa(A_NAMES) + 8 * i, 0);
         }
         self.ivp = sa(A_IV);
@@ -1579,6 +1633,10 @@ impl Engine {
                 0
             }
             Some(_) => {
+                if !self.refs_ok(sa(A_PU_S)) {
+                    self.w64(sa(A_AD_PU_S), 0);
+                    return 0;
+                }
                 self.set_anchors(sa(A_PU_S), 0);
                 self.w64(sa(A_AD_PU_S), sa(A_PU_S));
                 self.max_mats(sa(A_PU_S))
@@ -1617,6 +1675,41 @@ impl Engine {
         }
     }
 
+    /// loose_match with compl_flag for operands longer than MAX_CODES (the
+    /// C program aborts there): the complemented operand is on the heap.
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn loose_match_long(
+        &self,
+        one_src: One,
+        one_len: i32,
+        two_start: i64,
+        two_len: i32,
+        max_ins: i32,
+        max_del: i32,
+        max_mis: i32,
+        rule_set: i32,
+    ) -> i32 {
+        let m = self.mem;
+        let n = one_len as usize;
+        let mut v = vec![0u8; n];
+        for k in 0..n {
+            v[n - 1 - k] = compl_code(m.one_get(&one_src, k as i64) as u32, rule_set);
+        }
+        self.loose_match(
+            One::Bytes(&v),
+            one_len,
+            two_start,
+            two_len,
+            max_ins,
+            max_del,
+            max_mis,
+            rule_set,
+            false,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn loose_match(
         &self,
@@ -1631,7 +1724,8 @@ impl Engine {
         compl_flag: bool,
     ) -> i32 {
         let m = self.mem;
-        // like the C locals: not initialised, only written parts are read
+        // complemented operand (only the written part is read); longer
+        // operands go through loose_match_long
         let mut result = [std::mem::MaybeUninit::<u8>::uninit(); MAX_CODES as usize];
         let one_src = if compl_flag {
             let mut i = 0;
@@ -1642,8 +1736,9 @@ impl Engine {
                 i += 1;
             }
             if one_len > MAX_CODES {
-                // result[MAX_CODES] overflows into the stack guard
-                abort();
+                return self.loose_match_long(
+                    one_src, one_len, two_start, two_len, max_ins, max_del, max_mis, rule_set,
+                );
             }
             let n = one_len.max(0) as usize;
             let mut len = one_len;
@@ -1652,11 +1747,7 @@ impl Engine {
                 let i = m.one_get(&one_src, k) as u32;
                 k += 1;
                 len -= 1;
-                result[len as usize] = std::mem::MaybeUninit::new(if rule_set == -1 {
-                    ((i >> 4) & 15) as u8
-                } else {
-                    ((KNOWN_CHAR_INDEX[(i & 15) as usize] as i32) << 2) as u8
-                });
+                result[len as usize] = std::mem::MaybeUninit::new(compl_code(i, rule_set));
             }
             One::Bytes(unsafe { std::slice::from_raw_parts(result.as_ptr() as *const u8, n) })
         } else {
@@ -1707,8 +1798,23 @@ impl Engine {
             return (two - two_start + 1) as i32;
         }
 
-        let mut stack = [std::mem::MaybeUninit::<StackEnt>::uninit(); LOOSE_STACK_SAFE as usize];
+        // choice points: the first STACK_INLINE on the stack, the rest on
+        // the heap (the C program has a fixed stack[100])
+        const STACK_INLINE: usize = 64;
+        let mut stack = [std::mem::MaybeUninit::<StackEnt>::uninit(); STACK_INLINE];
+        let mut stack_heap: Vec<StackEnt> = Vec::new();
         let mut nxtent: i32 = 0;
+        // every entry below nxtent was written by push
+        macro_rules! ent {
+            ($k:expr) => {{
+                let k = $k as usize;
+                if k < STACK_INLINE {
+                    unsafe { &mut *stack[k].as_mut_ptr() }
+                } else {
+                    &mut stack_heap[k - STACK_INLINE]
+                }
+            }};
+        }
         macro_rules! ret {
             ($v:expr) => {{
                 return $v;
@@ -1717,12 +1823,7 @@ impl Engine {
         macro_rules! push {
             ($n:expr) => {{
                 let k = nxtent as usize;
-                if nxtent >= LOOSE_STACK_SAFE {
-                    // stack[] has run into the stack guard: the C function
-                    // aborts when it returns (it has no other side effects)
-                    abort();
-                }
-                stack[k] = std::mem::MaybeUninit::new(StackEnt {
+                let e = StackEnt {
                     p1: one,
                     p2: two,
                     n1: one_len,
@@ -1731,7 +1832,14 @@ impl Engine {
                     ins: max_ins,
                     del: max_del,
                     next_choice: $n,
-                });
+                };
+                if k < STACK_INLINE {
+                    stack[k] = std::mem::MaybeUninit::new(e);
+                } else if k - STACK_INLINE < stack_heap.len() {
+                    stack_heap[k - STACK_INLINE] = e;
+                } else {
+                    stack_heap.push(e);
+                }
                 nxtent += 1;
             }};
         }
@@ -1775,9 +1883,7 @@ impl Engine {
                     } else if max_del != 0 && two_len >= 1 {
                         lbl = Lm::Del;
                     } else if nxtent != 0 {
-                        nxtent -= 1;
-                        // entries below nxtent were all written by push
-                        let e = unsafe { stack[nxtent as usize].assume_init() };
+                        let e = *ent!(nxtent - 1);
                         one = e.p1;
                         two = e.p2;
                         one_len = e.n1;
@@ -1787,10 +1893,16 @@ impl Engine {
                         max_del = e.del;
                         if e.next_choice == 1 {
                             if max_del != 0 {
-                                unsafe { (*stack[nxtent as usize].as_mut_ptr()).next_choice = 2 };
+                                // the "delete" choice of this point is still
+                                // to come: the entry stays on the stack (the
+                                // C code released it and lost that choice)
+                                ent!(nxtent - 1).next_choice = 2;
+                            } else {
+                                nxtent -= 1;
                             }
                             lbl = Lm::Ins;
                         } else {
+                            nxtent -= 1;
                             lbl = Lm::Del;
                         }
                     } else {
@@ -2409,10 +2521,6 @@ impl Engine {
             hits[n] = sr;
             self.revhits = revhits;
             self.br1 = br;
-            if n > MAX_PUNITS {
-                // revhits[MAX_PUNITS] overflows into the stack guard
-                abort();
-            }
             Out::Done(n as i32)
         }
     }
@@ -2704,6 +2812,11 @@ impl Engine {
         let len = g32!(O_U12);
         let ins = g32!(O_U0);
         let mut last = er + 1 + ins as i64 - len as i64;
+        // more inserts than letters: never start past the end of the
+        // sequence (C reads outside the buffer there)
+        if last > er + 1 {
+            last = er + 1;
+        }
         if last > sr && g32!(O_ANCH) != 0 {
             last = sr;
         }
@@ -2918,5 +3031,158 @@ impl Engine {
         let v = hits[i as usize];
         m.w64(sa(A_PAST_LAST), v);
         i
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The search of loose_match written as plain recursion: at each step
+    /// a matching character is always taken; otherwise the choices are
+    /// tried in the order mismatch, insert, delete (insert/delete only as
+    /// the C code offers them).  `pending` tells if an earlier choice is
+    /// still open (C: `nxtent != 0`), because the C loop stops at the end
+    /// of the sequence when nothing is open.  Returns the number of
+    /// sequence characters used, or None.
+    #[allow(clippy::too_many_arguments)]
+    fn reference(
+        one: &[u8],
+        two: &[u8],
+        mut i: usize,
+        mut j: usize,
+        mis: i32,
+        ins: i32,
+        del: i32,
+        pending: bool,
+    ) -> Option<usize> {
+        let known = |c: u8| KNOWN_CHAR[(c & 15) as usize] != 0;
+        let matches = |c1: u8, c2: u8| {
+            let a = c1 & 15;
+            known(a) && (a & (c2 & 15)) == a
+        };
+        loop {
+            let one_len = one.len() - i;
+            let two_len = two.len() - j;
+            if two_len == 0 && !pending {
+                return None;
+            }
+            if two_len > 0 && one_len > 0 && matches(two[j], one[i]) {
+                i += 1;
+                j += 1;
+                if one.len() == i {
+                    return Some(j);
+                }
+                continue;
+            }
+            // (choice, is it the last choice of this point)
+            let mut choices: Vec<char> = Vec::new();
+            if mis > 0 && one_len >= 1 && two_len >= 1 {
+                choices.push('m');
+                if ins > 0 {
+                    choices.push('i');
+                    if del > 0 {
+                        choices.push('d');
+                    }
+                } else if del > 0 {
+                    choices.push('d');
+                }
+            } else if ins > 0 && one_len >= 1 {
+                choices.push('i');
+                if del > 0 && two_len >= 1 {
+                    choices.push('d');
+                }
+            } else if del > 0 && two_len >= 1 {
+                // no other choice: continue in this loop
+                j += 1;
+                let del2 = del - 1;
+                if one.len() == i {
+                    return Some(j);
+                }
+                return reference(one, two, i, j, mis, ins, del2, pending);
+            } else {
+                return None;
+            }
+            let n = choices.len();
+            for (k, c) in choices.into_iter().enumerate() {
+                let p = pending || k + 1 < n;
+                let r = match c {
+                    'm' => {
+                        if one.len() == i + 1 {
+                            return Some(j + 1);
+                        }
+                        reference(one, two, i + 1, j + 1, mis - 1, ins, del, p)
+                    }
+                    'i' => {
+                        if one.len() == i + 1 {
+                            return Some(j);
+                        }
+                        reference(one, two, i + 1, j, mis, ins - 1, del, p)
+                    }
+                    _ => {
+                        if one.len() == i {
+                            return Some(j + 1);
+                        }
+                        reference(one, two, i, j + 1, mis, ins, del - 1, p)
+                    }
+                };
+                if r.is_some() {
+                    return r;
+                }
+            }
+            return None;
+        }
+    }
+
+    #[test]
+    fn loose_match_explores_every_choice() {
+        let mut e = Engine::new();
+        assert!(e.parse_cmd(b"A", DNA) != 0);
+        let mut seed: u64 = 12345;
+        let mut rnd = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let mut data = Buf::new();
+        for case in 0..200_000 {
+            let one_len = 1 + rnd(6) as usize;
+            let two_len = rnd(9) as usize;
+            let bases = b"acgtn";
+            let one: Vec<u8> = (0..one_len)
+                .map(|_| e.p2c(bases[rnd(4) as usize]))
+                .collect();
+            let two_chars: Vec<u8> = (0..two_len)
+                .map(|_| {
+                    let k = if rnd(8) == 0 { 5 } else { 4 };
+                    bases[rnd(k) as usize]
+                })
+                .collect();
+            data.store(&two_chars);
+            e.comp_data(&data);
+            let two: Vec<u8> = two_chars.iter().map(|&c| e.p2c(c)).collect();
+            let (mis, ins, del) = (rnd(3) as i32, rnd(3) as i32, rnd(3) as i32);
+            if ins == 0 && del == 0 {
+                continue;
+            }
+            let got = e.loose_match(
+                One::Bytes(&one),
+                one_len as i32,
+                e.cdata_base(),
+                two_len as i32,
+                ins,
+                del,
+                mis,
+                -1,
+                false,
+            );
+            let want =
+                reference(&one, &two, 0, 0, mis, ins, del, false).map_or(0, |j| j as i32 + 1);
+            assert_eq!(
+                got, want,
+                "case {case}: one {one:?} two {two:?} mis {mis} ins {ins} del {del}"
+            );
+        }
     }
 }

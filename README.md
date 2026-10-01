@@ -6,10 +6,17 @@ patterns (ranges, hairpins/reverse complements with pairing rules, repeats,
 inexact matches, weight matrices, alternatives, length limits, `^`/`$`,
 `any()`/`notany()` for proteins).
 
-The goal of the port is **byte-identical results** with the original C
-program: same hits, same output format, same exit status, same error
-messages, same handling of odd input. The pattern language is described in
-[`README.original`](README.original) (the original documentation).
+The pattern language is described in [`README.original`](README.original)
+(the original documentation).
+
+## Versions
+
+* **0.0.0** – exact reproduction of the original C program, including its
+  bugs, crashes and fixed limits.
+* **0.1.0** (this version) – the bugs and input problems of the original
+  are fixed (see [`CHANGELOG.md`](CHANGELOG.md)).  For all other input the
+  results are byte-identical to the original C program: same hits, same
+  output format, same exit status, same messages.
 
 ## Build
 
@@ -25,16 +32,17 @@ No third-party crates are used.
 Same command line as the original:
 
 ```sh
-scan_for_matches [-c] [-p] [-o N] [-i ids_to_ignore] pattern_file < fasta_input > hits
+scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] pattern_file < fasta_input > hits
 ```
 
 | option | meaning |
 |---|---|
-| `-c` | also search the opposite strand (reverse complement) |
+| `-c` | also search the opposite strand (reverse complement); not with `-p` |
 | `-p` | protein sequences |
+| `-n N` | stop (exit status 1) after N sequences without a hit |
+| `-m N` | report at most N hits |
 | `-o N` | show overlapping hits (the value is not used) |
 | `-i file` | file of sequence ids to skip |
-| `-n`, `-m` | listed in the usage text, but in the original `getopt` string they take no argument, so the C program crashes (SIGSEGV) when they are given; the port does the same |
 
 Example (from the original README):
 
@@ -47,58 +55,38 @@ cguaacc ggttaacc gguuacg
 CGUAACC GGTTAACC GGUUACG 
 ```
 
-## How exact is it?
+## Differences from the original C program
 
-The port follows `scan_for_matches.c` and `ggpunit.c` statement by
-statement, including their quirks, for example:
+Only these (details in `CHANGELOG.md`):
 
-* option parsing uses the C library `getopt` (so messages and argument
-  order rules are the platform's), `-n`/`-m` crash as described above;
-* FASTA reading: the first record must start with `>`; only spaces and
-  newlines are removed from sequences (`\r`, tabs, digits are kept); a
-  header line at end of file without a newline makes the C program loop
-  forever, and the port too;
-* a pattern whose total maximum length is 0 (for example `^` alone) is
-  reported as "failed to parse pattern";
-* state that the C code keeps between sequences (last hit of each named
-  unit, backtracking register, `past_last`) is kept the same way;
-* `compl()` maps `s` to `S`, `-c` with `-p` runs the DNA complement code on
-  protein data, bytes ≥ 0x80 index the code table with a signed `char`.
+* no fixed limits: any number of pattern units, pattern codes and weights
+  that fit on a pattern line, long hairpin stems and many mismatches,
+  sequence ids of any length, any number of ids to ignore, sequences up to
+  2 147 483 645 characters;
+* `-n` and `-m` work (the original always crashed);
+* undefined names (`~p3` without `p3`), names that refer to themselves
+  (`p1=~p1`), undefined rule sets, negative lengths and negative
+  mismatch/insert/delete counts are pattern errors ("failed to parse
+  pattern", exit status 1) instead of crashes or reads outside memory;
+* `p50` and `r50` work like the other names and rule sets;
+* inexact matches with mismatches, inserts and deletes together try every
+  choice (the original lost the "delete" choice after a mismatch, so it
+  missed some hits);
+* inexact words with more inserts than letters do not read past the end of
+  the sequence;
+* a header line at the end of the input without a newline ends the input
+  (the original looped for ever);
+* Windows line ends (`\r\n`) in sequences and patterns, and text or blank
+  lines before the first `>`, are accepted;
+* protein data is matched in upper case (lowercase data did not match);
+  the output still shows the data as it is;
+* `-c` with `-p` is an error (exit status 2);
+* with `-c`, a lowercase `s` is shown as `s` (the original showed `S`);
+* bytes 0x80 and above are unknown characters, like `x`.
 
-The original has fixed-size arrays (100 pattern units, 600 pattern code
-bytes, 10500 weights, 100-entry stacks in the matcher, a 250 MB sequence
-buffer). When a pattern or input is too big for them, the C program writes
-past the end of the arrays: sometimes it silently changes the pattern,
-sometimes it aborts (stack protector) or crashes. The port reproduces this
-too: it keeps the C program's static data in one memory block laid out
-exactly like the reference build, uses C-sized stack limits, and the same
-buffer bounds. So results also match for over-limit patterns, `p50`/`r50`
-(which alias other globals in C), negative ranges, and similar cases.
-
-**Reference build.** Where C behaviour depends on memory layout, the port
-follows the original built on macOS arm64 with Apple clang:
-`cc -std=gnu89 -O2` (the README's `-O` and the Makefile's `-g -O2` give the
-same results; an unoptimised `-O0` build lays out its stack differently and
-gives other results for over-limit patterns). `tests/build_reference.sh`
-builds it.
-
-**What cannot be identical.** In a few undefined-behaviour cases the C
-program itself gives different results from run to run, because they depend
-on address-space randomisation. No port can match those; they are:
-
-* sequence ids of 1000 or more characters (the C `id[1000]` buffer
-  overflows into a pointer, and the printed id then ends in random bytes);
-* data bytes 0xA3/0xA4 in DNA mode, and bytes 0x80–0x9F when pattern names
-  `p46`–`p49` are used (they read bytes of heap/static pointers);
-* patterns with more than 100 units whose overflowed units overlay the
-  pattern codes, in some cases (pointer bytes become pattern codes);
-* ignore lists (`-i`) with more than 20 000 ids: the extra entries overlay
-  the pattern text in C.  The port gives C's result for the normal case
-  (pattern of 6 or more characters: SIGSEGV at the first sequence not among
-  the first 20 000 ids; more than 26 125 ids: abort at the end).  With a
-  shorter pattern, or with so many ids (about 26 400 or more, depending on
-  the size of the environment) that C crashes while still reading the list,
-  C's result depends on heap addresses or on the environment.
+Unchanged on purpose (see `TODO.md`, group C): a pattern whose longest
+match is 0 characters is a pattern error, the value of `-o` is not used, a
+`length()` unit can see the last match of a name that is not matched yet.
 
 ## Tests
 
@@ -108,33 +96,41 @@ cargo test --release
 
 * `tests/original_suite.rs` – the test suite shipped with the C program
   (`run_tests`, `test_output`).
-* `tests/golden.rs` – 788 cases recorded from the C reference
-  (`tests/make_golden.py`): edge cases, over-limit patterns, options, odd
-  bytes and random patterns; stdout and exit status must match.
+* `tests/golden.rs` – cases recorded from the C reference program
+  (`tests/make_golden.py`, split with `tests/split_golden.py`):
+  `golden.tsv` (550 cases where this version equals C) and `fixed.tsv`
+  (234 cases changed by the fixes).
+* `tests/fixes.rs` – one test per fix, with expected results worked out
+  from the pattern language.
+* unit test in `src/engine.rs` – the inexact matcher against a separate
+  recursive implementation of its search order (200 000 random cases).
 
 Differential testing against the C program:
 
 ```sh
 tests/build_reference.sh ../scan_for_matches_original target/reference/scan_for_matches
-python3 tests/fuzz_compare.py target/reference/scan_for_matches target/release/scan_for_matches 10000 1
+python3 tests/fuzz_compare.py --compat target/reference/scan_for_matches target/release/scan_for_matches 10000 1
 ```
 
-`fuzz_compare.py` generates random patterns (including stress patterns near
-the C limits), FASTA input and options, and compares stdout, stderr and
-exit status. A difference is reported as `C-unstable` when the C program
-itself does not repeat its result. During development more than 100 000
-cases were run with no difference outside that class.
+With `--compat`, `fuzz_compare.py` generates only input that no fix
+touches, so stdout, stderr and exit status must equal the C program's
+(40 000 cases: no difference).  Without `--compat` it also generates
+over-limit patterns, odd bytes and so on, as used for version 0.0.0.
+
+The reference program is the original built on macOS arm64 with Apple
+clang, `cc -std=gnu89 -O2` (the original does not compile with the default
+flags of current compilers).
 
 ## Speed
 
 Typical patterns run at about the speed of the C program (from 0.8× to
-1.3× of its time, depending on the pattern; exact words, inexact words,
-weight matrices and alternatives are faster, heavy range backtracking is
-slightly slower).
+1.3× of its time, depending on the pattern).  Inexact matches with
+mismatches, inserts and deletes together can take longer than in the
+original, because the choices it skipped are now tried.
 
 ## Layout
 
 * `src/main.rs` – port of `scan_for_matches.c` (options, FASTA, output)
 * `src/engine.rs` – port of `ggpunit.c` (pattern parser and matcher)
-* `src/sys.rs` – the few C library calls used for exact behaviour
-  (`getopt`, `sscanf`, stdio output, signals, `mmap`)
+* `src/sys.rs` – the few C library calls used (`getopt`, `sscanf`, stdio
+  output, signals, `mmap`)

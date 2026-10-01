@@ -2,7 +2,7 @@
 """Differential test: run the C original and the Rust port on random
 patterns / FASTA inputs / options and compare stdout, stderr and exit code.
 
-usage: fuzz_compare.py C_BINARY RUST_BINARY [N_CASES] [SEED]
+usage: fuzz_compare.py [--compat] C_BINARY RUST_BINARY [N_CASES] [SEED]
 """
 import os
 import random
@@ -12,6 +12,9 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 C_BIN, R_BIN = None, None
+# --compat: only inputs where version 0.1.0 must still equal the C program
+# (no feature changed by a fix: see CHANGELOG.md)
+COMPAT = False
 N = 2000
 SEED = 1
 TIMEOUT = 10
@@ -31,18 +34,18 @@ def rnd_seq(r, protein):
             if x < 0.85:
                 out.append(r.choice(AA))
             elif x < 0.92:
-                out.append(r.choice("XBZaclk*"))
+                out.append(r.choice("XBZ*" if COMPAT else "XBZaclk*"))
             else:
                 out.append(r.choice(" \n"))
         else:
             if x < 0.85:
                 out.append(r.choice(DNA_SEQ))
             elif x < 0.93:
-                out.append(r.choice(DNA_AMB))
+                out.append(r.choice(DNA_AMB.replace("s", "") if COMPAT else DNA_AMB))
             elif x < 0.97:
                 out.append(r.choice(" \n"))
-            elif x < 0.995:
-                out.append(r.choice("x-*.\r\t0"))
+            elif x < 0.995 or COMPAT:
+                out.append(r.choice("x-*.\t0" if COMPAT else "x-*.\r\t0"))
             else:
                 b = r.choice([0x80, 0x9f, 0xa0, 0xa1, 0xa2, 0xa5, 0xa8, 0xc3, 0xff, 0x01, 0x00])
                 out.append(chr(b))
@@ -72,9 +75,9 @@ def rnd_fasta(r, protein):
         lines = [s[i:i + w] for i in range(0, len(s), w)] or [""]
         recs.append(hdr + "\n" + "\n".join(lines) + "\n")
     txt = "".join(recs)
-    if r.random() < 0.05:
+    if r.random() < 0.05 and not COMPAT:
         txt = txt.rstrip("\n")  # missing final newline (body)
-    if r.random() < 0.03:
+    if r.random() < 0.03 and not COMPAT:
         txt = "\n" + txt  # leading blank line: C stops immediately
     return txt
 
@@ -91,7 +94,10 @@ class Pat:
         r = self.r
         if r.random() < 0.6:
             return ""
-        return "[%d,%d,%d]" % (r.choice([0, 0, 1, 1, 2]), r.choice([0, 0, 0, 1, 2]), r.choice([0, 0, 0, 1, 2]))
+        m, i, d = r.choice([0, 0, 1, 1, 2]), r.choice([0, 0, 0, 1, 2]), r.choice([0, 0, 0, 1, 2])
+        if COMPAT and m and i and d:
+            d = 0
+        return "[%d,%d,%d]" % (m, i, d)
 
     def word(self, n):
         if self.protein:
@@ -118,7 +124,13 @@ class Pat:
         if k == "exact":
             return name + self.word(r.randint(1, 4))
         if k == "sim":
-            return name + self.word(r.randint(1, 6)) + "[%d,%d,%d]" % (r.randint(0, 2), r.randint(0, 2), r.randint(0, 2))
+            n = r.randint(1, 6)
+            m, i, d = r.randint(0, 2), r.randint(0, 2), r.randint(0, 2)
+            if COMPAT:
+                i = min(i, n - 1)
+                if m and i and d:
+                    d = 0
+            return name + self.word(n) + "[%d,%d,%d]" % (m, i, d)
         if k in ("repeat", "inv", "compl", "rcompl", "llim"):
             if not self.defined:
                 a = r.randint(1, 5)
@@ -178,7 +190,7 @@ class Pat:
         if r.random() < 0.1:
             # comments and newlines
             txt = "% comment line\n" + txt.replace(" ", "\n", 1) + "\n% trailing"
-        if r.random() < 0.05:
+        if r.random() < 0.05 and not COMPAT:
             # random corruption
             i = r.randint(0, len(txt))
             txt = txt[:i] + r.choice(["(", ")", "[", "]", "|", ",", "~", "x", "p9", "..", "{"]) + txt[i:]
@@ -224,17 +236,17 @@ def run(binary, args, pat_path, inp):
 def one(case):
     r = random.Random(SEED * 1000003 + case)
     protein = r.random() < 0.25
-    pat = Pat(r, protein).build() if r.random() > 0.15 else stress_pattern(r, protein)
+    pat = Pat(r, protein).build() if (r.random() > 0.15 or COMPAT) else stress_pattern(r, protein)
     fasta = rnd_fasta(r, protein)
     args = []
     if protein:
         args.append("-p")
-    if r.random() < 0.4:
+    if r.random() < 0.4 and not (COMPAT and protein):
         args.append("-c")
     if r.random() < 0.3:
         args += ["-o", "1"]
     if r.random() < 0.02:
-        args += [r.choice(["-x", "-n", "-m", "--", "-o"])]
+        args += [r.choice(["-x", "--", "-o"] if COMPAT else ["-x", "-n", "-m", "--", "-o"])]
     with tempfile.TemporaryDirectory() as d:
         pp = os.path.join(d, "pat")
         with open(pp, "wb") as f:
@@ -258,7 +270,10 @@ def one(case):
 
 
 def main():
-    global C_BIN, R_BIN, N, SEED
+    global C_BIN, R_BIN, N, SEED, COMPAT
+    if "--compat" in sys.argv:
+        sys.argv.remove("--compat")
+        COMPAT = True
     C_BIN, R_BIN = sys.argv[1], sys.argv[2]
     N = int(sys.argv[3]) if len(sys.argv) > 3 else 2000
     SEED = int(sys.argv[4]) if len(sys.argv) > 4 else 1

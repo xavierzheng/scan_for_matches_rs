@@ -1,6 +1,11 @@
 //! Golden cases recorded from the C reference program with
-//! `tests/make_golden.py`: pattern, options and input, with the expected
-//! stdout and exit status (exit code or killing signal).
+//! `tests/make_golden.py` and split with `tests/split_golden.py`: pattern,
+//! options and input, with the expected stdout and exit status (exit code
+//! or killing signal).
+//!
+//! * `golden.tsv` – cases where this version must equal the C program.
+//! * `fixed.tsv` – cases changed by the fixes of version 0.1.0 (expected
+//!   results are this version's).
 
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
@@ -65,12 +70,18 @@ fn run(c: &Case, dir: &std::path::Path) -> Result<(), String> {
 }
 
 #[test]
-fn golden_cases() {
-    let text = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/golden.tsv"
-    ))
-    .unwrap();
+fn golden_same_as_c() {
+    check("golden.tsv", 500);
+}
+
+#[test]
+fn golden_fixed() {
+    check("fixed.tsv", 200);
+}
+
+fn check(file: &str, min_cases: usize) {
+    let text = std::fs::read_to_string(format!("{}/tests/data/{file}", env!("CARGO_MANIFEST_DIR")))
+        .unwrap();
     let cases: Vec<Case> = text
         .lines()
         .enumerate()
@@ -94,8 +105,8 @@ fn golden_cases() {
             }
         })
         .collect();
-    assert!(cases.len() > 500);
-    let dir = std::env::temp_dir().join(format!("sfm_golden_{}", std::process::id()));
+    assert!(cases.len() >= min_cases);
+    let dir = std::env::temp_dir().join(format!("sfm_golden_{}_{file}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -118,7 +129,7 @@ fn golden_cases() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
         failures.is_empty(),
-        "{} of {} golden cases differ:\n{}",
+        "{file}: {} of {} cases differ:\n{}",
         failures.len(),
         cases.len(),
         failures.join("\n")

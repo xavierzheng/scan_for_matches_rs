@@ -12,15 +12,17 @@ use engine::{Buf, DNA, Engine, PEPTIDE, compl};
 use std::io::Read;
 
 const MAX_PAT_LINE_LN: usize = 32000;
-/// `char *ignore[20000]` in C's main(); the entries after it lie on top of
-/// line[32000], id[1000] and hits[2000], and entry 26125 on the stack guard.
-const IGNORE_SLOTS: usize = 20000;
-const IGNORE_TO_GUARD: usize = 26125;
 const EOF: i32 = -1;
 
 #[inline(always)]
 fn isspace(c: i32) -> bool {
     matches!(c, 0x20 | 0x09 | 0x0a | 0x0b | 0x0c | 0x0d)
+}
+
+/// Characters left out of sequences.
+#[inline(always)]
+fn is_seq_space(b: u8) -> bool {
+    b == b' ' || b == b'\n' || b == b'\r'
 }
 
 /// Byte reader with C `getc`/`ungetc` semantics.
@@ -117,7 +119,25 @@ impl<R: Read> Input<R> {
         self.scan_s(out)
     }
 
-    /// Sequence body: everything up to EOF or '>', dropping ' ' and '\n'.
+    /// Skip anything before the first line that starts with '>' (blank
+    /// lines, comments).  The '>' is left unread.
+    fn skip_to_first_header(&mut self) {
+        let mut line_start = true;
+        loop {
+            let c = self.getc();
+            if c == EOF {
+                return;
+            }
+            if c == b'>' as i32 && line_start {
+                self.ungetc(c);
+                return;
+            }
+            line_start = c == b'\n' as i32 || c == b'\r' as i32;
+        }
+    }
+
+    /// Sequence body: everything up to EOF or '>', dropping ' ', '\n' and
+    /// '\r' (Windows line ends).
     /// Returns the char that stopped the scan.
     fn read_body(&mut self, out: &mut Vec<u8>) -> i32 {
         out.clear();
@@ -125,7 +145,7 @@ impl<R: Read> Input<R> {
             if c == b'>' as i32 {
                 return c;
             }
-            if c != b' ' as i32 && c != b'\n' as i32 {
+            if !is_seq_space(c as u8) {
                 out.push(c as u8);
             }
         }
@@ -136,17 +156,12 @@ impl<R: Read> Input<R> {
             let chunk = &self.buf[self.pos..self.len];
             match chunk.iter().position(|&b| b == b'>') {
                 Some(k) => {
-                    out.extend(
-                        chunk[..k]
-                            .iter()
-                            .copied()
-                            .filter(|&b| b != b' ' && b != b'\n'),
-                    );
+                    out.extend(chunk[..k].iter().copied().filter(|&b| !is_seq_space(b)));
                     self.pos += k + 1;
                     return b'>' as i32;
                 }
                 None => {
-                    out.extend(chunk.iter().copied().filter(|&b| b != b' ' && b != b'\n'));
+                    out.extend(chunk.iter().copied().filter(|&b| !is_seq_space(b)));
                     self.pos = self.len;
                 }
             }
@@ -162,7 +177,7 @@ struct Printer {
 impl Printer {
     /// Print one hit the way the C code does: `>id:[a,b]` on one line,
     /// then every matched piece followed by a space, then a newline.
-    #[allow(clippy::too_many_arguments, clippy::explicit_counter_loop)]
+    #[allow(clippy::too_many_arguments)]
     fn hit(&mut self, id: &[u8], a: i64, b: i64, hits: &[i64], n: usize, data: &Buf, cdata: i64) {
         self.line.clear();
         self.line.push(b'>');
@@ -172,21 +187,10 @@ impl Printer {
         self.out.write(&self.line);
         self.line.clear();
         for i1 in 0..n {
-            let j = (hits[i1 + 1] - hits[i1]) as i32;
-            // `for (...; j; j--)` with an int counter
-            let count = j as u32 as u64;
-            let mut p = hits[i1] - cdata;
-            for _ in 0..count {
-                match data.try_get(p) {
-                    Some(b) => self.line.push(b),
-                    None => {
-                        // C faults here after printf() has buffered every
-                        // character before this one
-                        self.out.write(&self.line);
-                        sys::segv();
-                    }
-                }
-                p += 1;
+            let from = hits[i1] - cdata;
+            let to = from + (hits[i1 + 1] - hits[i1]).max(0);
+            for p in from..to {
+                self.line.push(data.get(p));
                 if self.line.len() >= 1 << 16 {
                     self.out.write(&self.line);
                     self.line.clear();
@@ -236,7 +240,7 @@ fn real_main() {
     let mut ig_fp: Option<std::fs::File> = None;
 
     loop {
-        let c = args.getopt(b"pcnmo:i:\0");
+        let c = args.getopt(b"pcn:m:o:i:\0");
         if c == -1 {
             break;
         }
@@ -271,21 +275,27 @@ fn real_main() {
     if errflag != 0 || optind >= argc {
         usage(errflag, optind, argc);
     }
+    if complements && protein {
+        eprintln!("-c (complementary strand) cannot be used with -p (protein sequences)");
+        usage(errflag, optind, argc);
+    }
     let pat_file = match open_path(&args.get(optind as usize)) {
         Some(f) => f,
         None => usage(errflag, optind, argc),
     };
 
     // ids to ignore
-    let mut ignore: Vec<Vec<u8>> = Vec::new();
+    let mut ignore: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    let mut n_ignore = 0usize;
     if let Some(f) = ig_fp {
         let mut inp = Input::new(f);
         let mut id = Vec::new();
         while inp.scan_s(&mut id) == 1 {
-            ignore.push(id.clone());
+            ignore.insert(id.clone());
+            n_ignore += 1;
         }
-        if !ignore.is_empty() {
-            eprintln!("ignoring {} id(s)", ignore.len());
+        if n_ignore > 0 {
+            eprintln!("ignoring {} id(s)", n_ignore);
         }
     }
 
@@ -305,7 +315,7 @@ fn real_main() {
                 if i != EOF {
                     i = b' ' as i32;
                 }
-            } else if i == b'\n' as i32 {
+            } else if i == b'\n' as i32 || i == b'\r' as i32 {
                 i = b' ' as i32;
             } else {
                 line.push(i as u8);
@@ -330,11 +340,7 @@ fn real_main() {
     }
 
     let mut data = Buf::new();
-    // `char *hits[2000]` is not initialised in C.  When the first search
-    // finds nothing, `past_last = hits[0]` copies the leftover value, which
-    // is this constant in the reference build.
     let mut hits: Vec<i64> = vec![0; 2000];
-    hits[0] = 0x0f00_7fff_ffff_fff8;
     let mut pr = Printer {
         out: sys::Out::new(),
         line: Vec::new(),
@@ -343,6 +349,7 @@ fn real_main() {
     let mut id: Vec<u8> = Vec::new();
     let mut body: Vec<u8> = Vec::new();
     let mut got_gt = false;
+    inp.skip_to_first_header();
 
     loop {
         if max_hits <= 0 {
@@ -363,32 +370,31 @@ fn real_main() {
                 break;
             }
             if c == EOF {
-                sys::hang();
+                break;
             }
         }
         let stop = inp.read_body(&mut body);
         got_gt = stop == b'>' as i32;
 
-        // copy into the persistent data buffer, NUL terminated; past the
-        // malloc'd block the C program faults while reading the input
-        if body.len() as i64 >= engine::ALLOC_LEN {
-            sys::segv();
+        if body.len() > engine::MAX_SEQ_LEN {
+            let mut msg = b"sequence ".to_vec();
+            msg.extend_from_slice(&id);
+            msg.extend_from_slice(
+                format!(
+                    " is too long (more than {} characters)\n",
+                    engine::MAX_SEQ_LEN
+                )
+                .as_bytes(),
+            );
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&msg);
+            std::process::exit(1);
         }
-        data.v[..body.len()].copy_from_slice(&body);
-        data.v[body.len()] = 0;
+        // the persistent data buffer, NUL terminated
+        data.store(&body);
         let ln = body.iter().position(|&b| b == 0).unwrap_or(body.len());
 
-        // `for (i=0; i < ig_index && strcmp(ignore[i],id) != 0; i++)`
-        let ignored = if ignore.len() <= IGNORE_SLOTS {
-            ignore.contains(&id)
-        } else if ignore[..IGNORE_SLOTS].contains(&id) {
-            true
-        } else {
-            // ignore[20000] lies on line[] and was overwritten by the pattern
-            // text, so strcmp() follows a bad pointer
-            sys::segv();
-        };
-        if ignored {
+        if ignore.contains(&id) {
             continue;
         }
 
@@ -464,9 +470,5 @@ fn real_main() {
                 std::process::exit(1);
             }
         }
-    }
-    if ignore.len() > IGNORE_TO_GUARD {
-        // the ignore list ran over main()'s stack guard: it fails on return
-        sys::abort();
     }
 }

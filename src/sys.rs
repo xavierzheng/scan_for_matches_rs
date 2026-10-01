@@ -52,19 +52,6 @@ pub fn sigbus() -> ! {
     std::process::abort()
 }
 
-/// Stack-protector failure in the C program (`__stack_chk_fail`).
-pub fn abort() -> ! {
-    std::process::abort()
-}
-
-/// The C program spins forever in `while (getc(stdin) != '\n');` at EOF.
-/// Buffered output is never flushed, exactly as in the original.
-pub fn hang() -> ! {
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
-    }
-}
-
 /// argv kept alive for the whole run (getopt may permute it on glibc).
 pub struct Args {
     _owned: Vec<CString>,
@@ -151,13 +138,17 @@ impl Out {
     }
 }
 
-/// Zeroed read/write memory, placed at `hint` if that range is free (the
-/// kernel picks another place otherwise).  Never unmapped.
+/// Zeroed read/write memory (address space only; pages are used when
+/// touched), placed at `hint` if that range is free.  Never unmapped.
 pub fn map_zeroed(hint: usize, len: usize) -> *mut u8 {
     #[cfg(target_os = "macos")]
     const MAP_ANON: c_int = 0x1000;
     #[cfg(not(target_os = "macos"))]
     const MAP_ANON: c_int = 0x20;
+    #[cfg(target_os = "macos")]
+    const MAP_NORESERVE: c_int = 0;
+    #[cfg(not(target_os = "macos"))]
+    const MAP_NORESERVE: c_int = 0x4000;
     const MAP_PRIVATE: c_int = 0x2;
     const PROT_RW: c_int = 0x1 | 0x2;
     let p = unsafe {
@@ -165,7 +156,7 @@ pub fn map_zeroed(hint: usize, len: usize) -> *mut u8 {
             hint as *mut c_void,
             len,
             PROT_RW,
-            MAP_PRIVATE | MAP_ANON,
+            MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
             -1,
             0,
         )
