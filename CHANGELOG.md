@@ -2,6 +2,12 @@
 
 ## Unreleased (0.2.0)
 
+- The matching engine has no global state any more: several engines can
+  run at the same time in different threads.  Patterns that read a name
+  before it is certainly matched (it is defined later, or only in one
+  branch of an alternative) are detected; they depend on earlier
+  sequences and will be searched on one thread.
+
 - FASTA input compressed with gzip or bgzip is read directly (detected by
   its first bytes; uses the system zlib library).  Damaged or truncated
   input stops with "gzip input: ..." and exit status 1.

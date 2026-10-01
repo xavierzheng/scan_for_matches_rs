@@ -76,15 +76,6 @@ const PAGE: usize = 0x4000;
 /// at most one 16-byte block per rule set r0..r50
 const HEAP_CAP: usize = 16 * 64;
 
-/// host address of the emulated static block (set once at start-up)
-static SB: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-
-/// Host address of a C static object given its reference address.
-#[inline(always)]
-fn sa(a: i64) -> i64 {
-    SB.load(std::sync::atomic::Ordering::Relaxed) + (a - REF_S)
-}
-
 // ---- struct punit layout (sizeof = 264) -----------------------------------
 const SZ: i64 = 264;
 const O_TYPE: i64 = 0;
@@ -332,6 +323,13 @@ struct M {
 }
 
 impl M {
+    /// Address of a C static object (given by its reference address) in
+    /// this engine's static block.
+    #[inline(always)]
+    fn sa(self, a: i64) -> i64 {
+        self.s as i64 + (a - REF_S)
+    }
+
     #[inline(always)]
     fn rb(self, a: i64) -> u8 {
         let o = a.wrapping_sub(self.cd as i64) as u64;
@@ -426,7 +424,7 @@ impl M {
     #[inline(always)]
     fn names_p<P: Pol>(self, i: i32) -> i64 {
         if !P::CHECKED && (0..=MAX_NAMES).contains(&i) {
-            self.pr64::<Fast>(sa(A_NAMES) + 8 * i as i64)
+            self.pr64::<Fast>(self.sa(A_NAMES) + 8 * i as i64)
         } else {
             self.names(i)
         }
@@ -460,7 +458,7 @@ impl M {
 
     #[inline(always)]
     fn names(self, i: i32) -> i64 {
-        self.r64(sa(A_NAMES) + 8 * i as i64)
+        self.r64(self.sa(A_NAMES) + 8 * i as i64)
     }
 
     /// KnownChar(C)
@@ -490,7 +488,7 @@ impl M {
         if rule_set == -1 {
             self.matches(c1, c2)
         } else {
-            let base = self.r64(sa(A_RULE_SETS) + 8 * rule_set as i64);
+            let base = self.r64(self.sa(A_RULE_SETS) + 8 * rule_set as i64);
             let idx = c2 as i64 + KNOWN_CHAR_INDEX[(c1 & 15) as usize] as i64;
             self.rb(base + idx) != 0
         }
@@ -751,6 +749,10 @@ pub struct Engine {
     p2c_lo: [u8; 128],
 }
 
+// An engine owns its memory blocks (the raw pointers point only into
+// them) and is used by one thread at a time.
+unsafe impl Send for Engine {}
+
 impl Engine {
     pub fn new() -> Engine {
         // static block followed by a read-only page
@@ -759,7 +761,6 @@ impl Engine {
             let a = s_ptr as usize;
             unsafe { s_ptr.add((PAGE - a % PAGE) % PAGE) }
         };
-        SB.store(s_ptr as i64, std::sync::atomic::Ordering::Relaxed);
         let mut heap = vec![0u8; HEAP_CAP];
         // coded sequence buffer, with zero bytes before it
         let cd_ptr = unsafe {
@@ -782,19 +783,19 @@ impl Engine {
             slow,
             mem,
             seq_type: 0,
-            pup: sa(A_PU_S),
-            cvp: sa(A_CV),
-            ivp: sa(A_IV),
+            pup: mem.sa(A_PU_S),
+            cvp: mem.sa(A_CV),
+            ivp: mem.sa(A_IV),
             br1: 0,
             end_srch: 0,
             revhits: Vec::with_capacity(256),
             p2c_lo: [0; 128],
         };
         for (i, v) in KNOWN_CHAR.iter().enumerate() {
-            e.wb(sa(A_KNOWN_CHAR) + i as i64, *v);
+            e.wb(e.mem.sa(A_KNOWN_CHAR) + i as i64, *v);
         }
         for (i, v) in KNOWN_CHAR_INDEX.iter().enumerate() {
-            e.wb(sa(A_KNOWN_CHAR_INDEX) + i as i64, *v as u8);
+            e.wb(e.mem.sa(A_KNOWN_CHAR_INDEX) + i as i64, *v as u8);
         }
         e
     }
@@ -851,12 +852,12 @@ impl Engine {
 
     #[inline(always)]
     fn past_last(&self) -> i64 {
-        self.r64(sa(A_PAST_LAST))
+        self.r64(self.mem.sa(A_PAST_LAST))
     }
 
     #[inline(always)]
     fn start_srch(&self) -> i64 {
-        self.r64(sa(A_START_SRCH))
+        self.r64(self.mem.sa(A_START_SRCH))
     }
 
     /// punit_to_code[c] where C subscripts with a signed char.
@@ -905,7 +906,7 @@ impl Engine {
             if v & T_BIT != 0 {
                 v |= A_BIT << 4;
             }
-            self.wb(sa(A_P2C) + the_char, v);
+            self.wb(self.mem.sa(A_P2C) + the_char, v);
             if the_char < 128 {
                 self.p2c_lo[the_char as usize] = v;
             }
@@ -930,10 +931,10 @@ impl Engine {
                 _ => None,
             };
             if let Some(c) = c {
-                self.wb(sa(A_CODE_TO_PUNIT) + the_char, c);
+                self.wb(self.mem.sa(A_CODE_TO_PUNIT) + the_char, c);
             }
         }
-        self.w32(sa(A_INITIALIZED), 1);
+        self.w32(self.mem.sa(A_INITIALIZED), 1);
     }
 
     /// comp_data(data, cdata): translate characters to codes, stop at NUL.
@@ -1300,7 +1301,7 @@ impl Engine {
         if at(l, p) != b'}' {
             return None;
         }
-        let slot = sa(A_RULE_SETS) + 8 * n as i64;
+        let slot = self.mem.sa(A_RULE_SETS) + 8 * n as i64;
         if self.r64(slot) == 0 {
             let a = self.malloc16();
             self.w64(slot, a);
@@ -1331,7 +1332,7 @@ impl Engine {
         let pu1 = self.pup;
         self.pup += SZ;
         if let Some((i, p1)) = name_assgn(l, p) {
-            let slot = sa(A_NAMES) + 8 * i as i64;
+            let slot = self.mem.sa(A_NAMES) + 8 * i as i64;
             if self.r64(slot) != 0 {
                 return None; // the slot is not released, as in C
             }
@@ -1559,7 +1560,7 @@ impl Engine {
                 COMPL_PUNIT => {
                     let rs = self.r32(pu + O_U16);
                     self.name_ok(self.r32(pu + O_U12))
-                        && (rs == -1 || self.r64(sa(A_RULE_SETS) + 8 * rs as i64) != 0)
+                        && (rs == -1 || self.r64(self.mem.sa(A_RULE_SETS) + 8 * rs as i64) != 0)
                 }
                 REPEAT_PUNIT | INV_REP_PUNIT => self.name_ok(self.r32(pu + O_U12)),
                 LLIM_PUNIT => {
@@ -1575,6 +1576,58 @@ impl Engine {
             pu = self.r64(pu + O_NXT);
         }
         true
+    }
+
+    /// Does the parsed pattern read a name that is not certainly matched
+    /// before, in the same attempt?  (The name is defined later in the
+    /// pattern, or only in one branch of an alternative.)  Such a unit uses
+    /// the last match of the name, which can come from an earlier attempt
+    /// or an earlier sequence, so the sequences are not independent.
+    #[allow(dead_code)] // used by the thread option (next step)
+    pub fn uses_earlier_state(&self) -> bool {
+        let root = self.r64(self.mem.sa(A_AD_PU_S));
+        if root == 0 {
+            return false;
+        }
+        let mut stateful = false;
+        self.walk_assigned(root, 0, &mut stateful);
+        stateful
+    }
+
+    /// Names (bit n) that are certainly matched after the units from `pu`
+    /// to the end of its list, given the names matched before.
+    fn walk_assigned(&self, mut pu: i64, mut assigned: u64, stateful: &mut bool) -> u64 {
+        let need = |n: i32, assigned: u64, stateful: &mut bool| {
+            if !(0..=MAX_NAMES).contains(&n) || assigned & (1u64 << n) == 0 {
+                *stateful = true;
+            }
+        };
+        while pu != 0 {
+            match self.r32(pu + O_TYPE) {
+                COMPL_PUNIT | REPEAT_PUNIT | INV_REP_PUNIT => {
+                    need(self.r32(pu + O_U12), assigned, stateful)
+                }
+                LLIM_PUNIT => {
+                    let v = pu + O_U0;
+                    for i in 1..=self.r32(v) {
+                        need(self.r32(v + 4 * i as i64), assigned, stateful);
+                    }
+                }
+                OR_PUNIT => {
+                    let a = self.walk_assigned(self.r64(pu + O_U0), assigned, stateful);
+                    let b = self.walk_assigned(self.r64(pu + O_U8), assigned, stateful);
+                    assigned = a & b;
+                }
+                _ => {}
+            }
+            for n in 0..=MAX_NAMES {
+                if self.names(n) == pu {
+                    assigned |= 1u64 << n;
+                }
+            }
+            pu = self.r64(pu + O_NXT);
+        }
+        assigned
     }
 
     /// Name `n` is defined, and following the names it refers to does not
@@ -1612,34 +1665,34 @@ impl Engine {
     pub fn parse_cmd(&mut self, line: &[u8], seq_type: i32) -> i32 {
         self.seq_type = seq_type;
         self.mem.pep = seq_type == PEPTIDE;
-        self.w32(sa(A_SEQ_TYPE), seq_type);
-        if self.r32(sa(A_INITIALIZED)) == 0 {
+        self.w32(self.mem.sa(A_SEQ_TYPE), seq_type);
+        if self.r32(self.mem.sa(A_INITIALIZED)) == 0 {
             self.build_conversion_tables();
         }
         for i in 0..N_NAMES {
-            self.w64(sa(A_NAMES) + 8 * i, 0);
+            self.w64(self.mem.sa(A_NAMES) + 8 * i, 0);
         }
-        self.ivp = sa(A_IV);
-        self.cvp = sa(A_CV);
-        self.pup = sa(A_PU_S);
-        self.w64(sa(A_AD_PU_S), sa(A_PU_S));
+        self.ivp = self.mem.sa(A_IV);
+        self.cvp = self.mem.sa(A_CV);
+        self.pup = self.mem.sa(A_PU_S);
+        self.w64(self.mem.sa(A_AD_PU_S), self.mem.sa(A_PU_S));
         if line.len() >= 1_000_000 {
-            self.w64(sa(A_AD_PU_S), 0);
+            self.w64(self.mem.sa(A_AD_PU_S), 0);
             return 0;
         }
         match self.parser(line) {
             None => {
-                self.w64(sa(A_AD_PU_S), 0);
+                self.w64(self.mem.sa(A_AD_PU_S), 0);
                 0
             }
             Some(_) => {
-                if !self.refs_ok(sa(A_PU_S)) {
-                    self.w64(sa(A_AD_PU_S), 0);
+                if !self.refs_ok(self.mem.sa(A_PU_S)) {
+                    self.w64(self.mem.sa(A_AD_PU_S), 0);
                     return 0;
                 }
-                self.set_anchors(sa(A_PU_S), 0);
-                self.w64(sa(A_AD_PU_S), sa(A_PU_S));
-                self.max_mats(sa(A_PU_S))
+                self.set_anchors(self.mem.sa(A_PU_S), 0);
+                self.w64(self.mem.sa(A_AD_PU_S), self.mem.sa(A_PU_S));
+                self.max_mats(self.mem.sa(A_PU_S))
             }
         }
     }
@@ -2998,23 +3051,23 @@ impl Engine {
     pub fn first_match(&mut self, len: i32, hits: &mut Vec<i64>) -> i32 {
         let m = self.mem;
         let start = m.cd as i64;
-        m.w64(sa(A_START_SRCH), start);
+        m.w64(self.mem.sa(A_START_SRCH), start);
         self.end_srch = start + (len as i64 - 1);
         self.br1 = 0;
-        let pu = m.r64(sa(A_AD_PU_S));
+        let pu = m.r64(self.mem.sa(A_AD_PU_S));
         let i = self.pattern_match(pu, start, self.end_srch, hits, true);
         let v = hits[i as usize];
-        m.w64(sa(A_PAST_LAST), v);
+        m.w64(self.mem.sa(A_PAST_LAST), v);
         i
     }
 
     pub fn next_match(&mut self, hits: &mut Vec<i64>) -> i32 {
         let m = self.mem;
-        let pu = m.r64(sa(A_AD_PU_S));
+        let pu = m.r64(self.mem.sa(A_AD_PU_S));
         let (s, e) = (self.start_srch(), self.end_srch);
         let i = self.pattern_match(pu, s, e, hits, false);
         let v = hits[i as usize];
-        m.w64(sa(A_PAST_LAST), v);
+        m.w64(self.mem.sa(A_PAST_LAST), v);
         i
     }
 
@@ -3029,7 +3082,7 @@ impl Engine {
             }
         }
         let v = hits[i as usize];
-        m.w64(sa(A_PAST_LAST), v);
+        m.w64(self.mem.sa(A_PAST_LAST), v);
         i
     }
 }
@@ -3132,6 +3185,73 @@ mod tests {
             }
             return None;
         }
+    }
+
+    fn parse(e: &mut Engine, pat: &str) -> bool {
+        e.parse_cmd(pat.as_bytes(), DNA) != 0
+    }
+
+    #[test]
+    fn earlier_state_detection() {
+        let cases = [
+            ("p1=3...3 2...4 ~p1", false),
+            ("p1=2...2 (~p1 | p1) p2=1...1 <p2", false),
+            ("p1=3...3 p2=1...2 length(p1+p2) < 5", false),
+            ("~p1 p1=3...3", true),
+            ("(p1=3...3 | AC) ~p1", true),
+            ("(p1=3...3 AA | p2=2...2) length(p1) < 5", true),
+            ("length(p1+p2) < 5 p1=2...2 p2=2...2", true),
+            ("(p1=2...2 | p1x) 1...2", false),
+        ];
+        for (pat, want) in cases {
+            let mut e = Engine::new();
+            if !parse(&mut e, pat) {
+                continue;
+            }
+            assert_eq!(e.uses_earlier_state(), want, "{pat}");
+        }
+    }
+
+    /// Engines in several threads at once give the same hits as one engine.
+    #[test]
+    fn engines_in_parallel_threads() {
+        let pat = "p1=4...6 2...6 ~p1[1,0,0] 0...3 p2=3...3 p2";
+        let seqs: Vec<Vec<u8>> = (0..8u64)
+            .map(|k| {
+                let mut x = 1 + k;
+                (0..20_000)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        b"acgt"[(x % 4) as usize]
+                    })
+                    .collect()
+            })
+            .collect();
+        let scan = |seq: &[u8]| -> Vec<Vec<i64>> {
+            let mut e = Engine::new();
+            assert!(parse(&mut e, pat));
+            let mut data = Buf::new();
+            data.store(seq);
+            e.comp_data(&data);
+            let base = e.cdata_base();
+            let mut hits = vec![0i64; 2000];
+            let mut out = Vec::new();
+            let mut i = e.first_match(seq.len() as i32, &mut hits);
+            while i > 0 {
+                out.push(hits[..=i as usize].iter().map(|h| h - base).collect());
+                i = e.cont_match(&mut hits);
+            }
+            out
+        };
+        let one: Vec<_> = seqs.iter().map(|s| scan(s)).collect();
+        assert!(one.iter().all(|h| !h.is_empty()));
+        let many: Vec<_> = std::thread::scope(|sc| {
+            let hs: Vec<_> = seqs.iter().map(|s| sc.spawn(move || scan(s))).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(one, many);
     }
 
     #[test]
