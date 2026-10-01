@@ -91,7 +91,14 @@ on address-space randomisation. No port can match those; they are:
 * data bytes 0xA3/0xA4 in DNA mode, and bytes 0x80–0x9F when pattern names
   `p46`–`p49` are used (they read bytes of heap/static pointers);
 * patterns with more than 100 units whose overflowed units overlay the
-  pattern codes, in some cases (pointer bytes become pattern codes).
+  pattern codes, in some cases (pointer bytes become pattern codes);
+* ignore lists (`-i`) with more than 20 000 ids: the extra entries overlay
+  the pattern text in C.  The port gives C's result for the normal case
+  (pattern of 6 or more characters: SIGSEGV at the first sequence not among
+  the first 20 000 ids; more than 26 125 ids: abort at the end).  With a
+  shorter pattern, or with so many ids (about 26 400 or more, depending on
+  the size of the environment) that C crashes while still reading the list,
+  C's result depends on heap addresses or on the environment.
 
 ## Tests
 

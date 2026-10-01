@@ -12,6 +12,10 @@ use engine::{compl, Buf, Engine, DNA, PEPTIDE};
 use std::io::Read;
 
 const MAX_PAT_LINE_LN: usize = 32000;
+/// `char *ignore[20000]` in C's main(); the entries after it lie on top of
+/// line[32000], id[1000] and hits[2000], and entry 26125 on the stack guard.
+const IGNORE_SLOTS: usize = 20000;
+const IGNORE_TO_GUARD: usize = 26125;
 const EOF: i32 = -1;
 
 #[inline(always)]
@@ -352,7 +356,17 @@ fn real_main() {
         data.v[body.len()] = 0;
         let ln = body.iter().position(|&b| b == 0).unwrap_or(body.len());
 
-        if ignore.contains(&id) {
+        // `for (i=0; i < ig_index && strcmp(ignore[i],id) != 0; i++)`
+        let ignored = if ignore.len() <= IGNORE_SLOTS {
+            ignore.contains(&id)
+        } else if ignore[..IGNORE_SLOTS].contains(&id) {
+            true
+        } else {
+            // ignore[20000] lies on line[] and was overwritten by the pattern
+            // text, so strcmp() follows a bad pointer
+            sys::segv();
+        };
+        if ignored {
             continue;
         }
 
@@ -408,5 +422,9 @@ fn real_main() {
                 std::process::exit(1);
             }
         }
+    }
+    if ignore.len() > IGNORE_TO_GUARD {
+        // the ignore list ran over main()'s stack guard: it fails on return
+        sys::abort();
     }
 }
