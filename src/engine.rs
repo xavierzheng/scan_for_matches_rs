@@ -126,11 +126,15 @@ const SCAN_LIMIT: i64 = 48;
 
 /// Positions of every k-mer of plain bases (A, C, G, T) in the coded
 /// sequence: `pos[starts[key]..starts[key + 1]]`, in increasing order.
-struct KIndex {
+pub struct KIndex {
     generation: u64,
     starts: Vec<u32>,
     pos: Vec<u32>,
 }
+
+/// A k-mer index shared by the engines that search pieces of one record
+/// strand (built by the first that needs it).
+pub type SharedIndex = std::sync::Arc<std::sync::OnceLock<KIndex>>;
 
 /// 2-bit value of a plain base code, or None.
 #[inline(always)]
@@ -142,6 +146,58 @@ fn base2(c: u8) -> Option<u32> {
         8 => Some(3),
         _ => None,
     }
+}
+
+/// Positions of every k-mer of plain bases in the coded sequence `seq`
+/// (the buffers of `reuse` are used again).
+fn build_index(seq: &[u8], reuse: Option<KIndex>) -> KIndex {
+    let nkeys = 1usize << (2 * KIDX_K);
+    let mask = (nkeys - 1) as u32;
+    let mut idx = reuse.unwrap_or(KIndex {
+        generation: 0,
+        starts: Vec::new(),
+        pos: Vec::new(),
+    });
+    idx.starts.clear();
+    idx.starts.resize(nkeys + 1, 0);
+    // pass 1: count, pass 2: fill
+    for pass in 0..2 {
+        let mut key = 0u32;
+        let mut run = 0usize;
+        for (i, &c) in seq.iter().enumerate() {
+            match base2(c) {
+                Some(b) => {
+                    key = (key << 2 | b) & mask;
+                    run += 1;
+                }
+                None => run = 0,
+            }
+            if run >= KIDX_K {
+                let at = i + 1 - KIDX_K;
+                if pass == 0 {
+                    idx.starts[key as usize + 1] += 1;
+                } else {
+                    let slot = &mut idx.starts[key as usize];
+                    idx.pos[*slot as usize] = at as u32;
+                    *slot += 1;
+                }
+            }
+        }
+        if pass == 0 {
+            for k in 0..nkeys {
+                idx.starts[k + 1] += idx.starts[k];
+            }
+            idx.pos.clear();
+            idx.pos.resize(idx.starts[nkeys] as usize, 0);
+        } else {
+            // starts[k] now holds the end of bucket k: shift back
+            for k in (0..nkeys).rev() {
+                idx.starts[k + 1] = idx.starts[k];
+            }
+            idx.starts[0] = 0;
+        }
+    }
+    idx
 }
 
 /// rev_compl_data(): one code of the reverse complement, or with a rule
@@ -777,6 +833,11 @@ pub struct Engine {
     cd_gen: u64,
     /// k-mer index of the coded sequence, built when first needed
     kidx: Option<KIndex>,
+    /// used instead of `kidx` while searching a piece of a long record
+    shared_kidx: Option<SharedIndex>,
+    /// highest start position of a hit (the first unit, when it is not
+    /// anchored); i64::MAX except while searching a piece of a record
+    start_lim: i64,
     /// scratch: masks of the unit after a range
     masks: Vec<u8>,
     /// punit_to_code for indexes 0..127 (never overwritten)
@@ -825,6 +886,8 @@ impl Engine {
             revhits: Vec::with_capacity(256),
             cd_gen: 0,
             kidx: None,
+            shared_kidx: None,
+            start_lim: i64::MAX,
             masks: Vec::new(),
             p2c_lo: [0; 128],
         };
@@ -1668,6 +1731,48 @@ impl Engine {
         assigned
     }
 
+    /// Can one sequence be searched in pieces (`first_match_in`)?  The
+    /// search must visit start positions in increasing order and the hits
+    /// at one start must not depend on where the search began: not with
+    /// matches of earlier sequences, a first unit that is an alternative
+    /// (its second branch is not tried at later starts), or `^` (it
+    /// matches where the search begins).
+    pub fn can_split(&self) -> bool {
+        let pu = self.r64(self.mem.sa(A_AD_PU_S));
+        pu != 0
+            && !self.uses_earlier_state()
+            && self.r32(pu + O_TYPE) != OR_PUNIT
+            && !self.has_match_start(pu, 0)
+    }
+
+    fn has_match_start(&self, mut pu: i64, depth: u32) -> bool {
+        if depth > 1_000_000 {
+            return true;
+        }
+        while pu != 0 {
+            match self.r32(pu + O_TYPE) {
+                MATCH_START => return true,
+                OR_PUNIT => {
+                    if self.has_match_start(self.r64(pu + O_U0), depth + 1)
+                        || self.has_match_start(self.r64(pu + O_U8), depth + 1)
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            pu = self.r64(pu + O_NXT);
+        }
+        false
+    }
+
+    /// Use `idx` as the k-mer index of the sequence loaded next (all
+    /// engines searching pieces of one record strand share it); None: the
+    /// engine builds its own.
+    pub fn set_shared_index(&mut self, idx: Option<SharedIndex>) {
+        self.shared_kidx = idx;
+    }
+
     /// Mark the range units whose following unit only checks a fixed string
     /// at one position (an exact word, an exact reverse complement or an
     /// exact repeat).  Trying a gap length where that unit fails changes
@@ -1809,9 +1914,18 @@ impl Engine {
         let Some(key) = key else {
             return (xlo..=xhi).find(|&x| self.masks_match_at(x, er));
         };
-        self.build_kidx(er);
         let base = self.mem.cd as i64;
-        let idx = self.kidx.as_ref().unwrap();
+        if self.shared_kidx.is_none() {
+            self.build_kidx(er);
+        }
+        let idx = match &self.shared_kidx {
+            Some(sh) => sh.get_or_init(|| {
+                let n = (er - base + 1).max(0) as usize;
+                let seq = unsafe { std::slice::from_raw_parts(self.mem.cd as *const u8, n) };
+                build_index(seq, None)
+            }),
+            None => self.kidx.as_ref().unwrap(),
+        };
         let list =
             &idx.pos[idx.starts[key as usize] as usize..idx.starts[key as usize + 1] as usize];
         let lo = (xlo - base) as u32;
@@ -1841,52 +1955,7 @@ impl Engine {
         let base = m.cd as i64;
         let n = (er - base + 1).max(0) as usize;
         let seq = unsafe { std::slice::from_raw_parts(m.cd as *const u8, n) };
-        let nkeys = 1usize << (2 * KIDX_K);
-        let mask = (nkeys - 1) as u32;
-        let mut idx = self.kidx.take().unwrap_or(KIndex {
-            generation: 0,
-            starts: Vec::new(),
-            pos: Vec::new(),
-        });
-        idx.starts.clear();
-        idx.starts.resize(nkeys + 1, 0);
-        // pass 1: count, pass 2: fill
-        for pass in 0..2 {
-            let mut key = 0u32;
-            let mut run = 0usize;
-            for (i, &c) in seq.iter().enumerate() {
-                match base2(c) {
-                    Some(b) => {
-                        key = (key << 2 | b) & mask;
-                        run += 1;
-                    }
-                    None => run = 0,
-                }
-                if run >= KIDX_K {
-                    let at = i + 1 - KIDX_K;
-                    if pass == 0 {
-                        idx.starts[key as usize + 1] += 1;
-                    } else {
-                        let slot = &mut idx.starts[key as usize];
-                        idx.pos[*slot as usize] = at as u32;
-                        *slot += 1;
-                    }
-                }
-            }
-            if pass == 0 {
-                for k in 0..nkeys {
-                    idx.starts[k + 1] += idx.starts[k];
-                }
-                idx.pos.clear();
-                idx.pos.resize(idx.starts[nkeys] as usize, 0);
-            } else {
-                // starts[k] now holds the end of bucket k: shift back
-                for k in (0..nkeys).rev() {
-                    idx.starts[k + 1] = idx.starts[k];
-                }
-                idx.starts[0] = 0;
-            }
-        }
+        let mut idx = build_index(seq, self.kidx.take());
         idx.generation = self.cd_gen;
         self.kidx = Some(idx);
     }
@@ -2608,6 +2677,9 @@ impl Engine {
                             if last > sr && g32!(O_ANCH) != 0 {
                                 last = sr;
                             }
+                            if last > self.start_lim && g32!(O_ANCH) == 0 {
+                                last = self.start_lim;
+                            }
                             let p1 = g64!(O_U8);
                             let ln = len.wrapping_sub(1);
                             let c0 = m.rb(p1);
@@ -2833,7 +2905,10 @@ impl Engine {
                                 // all lengths fail: next start, if unanchored
                                 hit += 1;
                                 s64!(O_HIT, hit);
-                                if hit + min as i64 - 1 <= er && g32!(O_ANCH) == 0 {
+                                if hit + min as i64 - 1 <= er
+                                    && g32!(O_ANCH) == 0
+                                    && hit <= self.start_lim
+                                {
                                     from = min as i64;
                                 } else {
                                     continue 'backl;
@@ -2848,7 +2923,10 @@ impl Engine {
                         } else {
                             let h = g64!(O_HIT) + 1;
                             s64!(O_HIT, h);
-                            if h + g32!(O_U0) as i64 - 1 <= er && g32!(O_ANCH) == 0 {
+                            if h + g32!(O_U0) as i64 - 1 <= er
+                                && g32!(O_ANCH) == 0
+                                && h <= self.start_lim
+                            {
                                 let mn = g32!(O_U0);
                                 s32!(O_U8, mn.wrapping_add(1));
                                 sr = g64!(O_HIT) + g32!(O_U0) as i64;
@@ -2932,6 +3010,9 @@ impl Engine {
         let mut last = er;
         if last > sr && g32!(O_ANCH) != 0 {
             last = sr;
+        }
+        if last > self.start_lim && g32!(O_ANCH) == 0 {
+            last = self.start_lim;
         }
         let cm = g64!(O_U0);
         while sr <= last {
@@ -3191,6 +3272,9 @@ impl Engine {
         if last > sr && g32!(O_ANCH) != 0 {
             last = sr;
         }
+        if last > self.start_lim && g32!(O_ANCH) == 0 {
+            last = self.start_lim;
+        }
         let mut found = false;
         while sr <= last {
             let code = g64!(O_U16);
@@ -3264,6 +3348,9 @@ impl Engine {
         let mut last = er + 1 - wlen as i64;
         if last > sr && g32!(O_ANCH) != 0 {
             last = sr;
+        }
+        if last > self.start_lim && g32!(O_ANCH) == 0 {
+            last = self.start_lim;
         }
         let pv1 = g64!(O_U8);
         let tupsz = g32!(O_U20);
@@ -3367,10 +3454,24 @@ impl Engine {
     }
 
     pub fn first_match(&mut self, len: i32, hits: &mut Vec<i64>) -> i32 {
+        self.start_lim = i64::MAX;
+        self.first_match_at(len, 0, hits)
+    }
+
+    /// Search one piece of the sequence: only hits that start at offsets
+    /// `from..=last` (they may end past `last`).  next_match and
+    /// cont_match then go on inside the same piece.  Only for patterns
+    /// where `can_split()` holds.
+    pub fn first_match_in(&mut self, len: i32, from: i64, last: i64, hits: &mut Vec<i64>) -> i32 {
+        self.start_lim = self.mem.cd as i64 + last;
+        self.first_match_at(len, from, hits)
+    }
+
+    fn first_match_at(&mut self, len: i32, from: i64, hits: &mut Vec<i64>) -> i32 {
         let m = self.mem;
-        let start = m.cd as i64;
+        let start = m.cd as i64 + from;
         m.w64(self.mem.sa(A_START_SRCH), start);
-        self.end_srch = start + (len as i64 - 1);
+        self.end_srch = m.cd as i64 + (len as i64 - 1);
         self.br1 = 0;
         let pu = m.r64(self.mem.sa(A_AD_PU_S));
         let i = self.pattern_match(pu, start, self.end_srch, hits, true);

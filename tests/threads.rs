@@ -6,6 +6,18 @@ use std::process::{Command, Stdio};
 type Out = (Option<i32>, Vec<u8>, Vec<u8>);
 
 fn scan(args: &[&str], pattern: &str, input: &[u8], files: &[(&str, &[u8])]) -> Out {
+    scan_env(args, pattern, input, files, None)
+}
+
+/// As `scan`; `piece`: SFM_PIECE, the size of the pieces long records are
+/// searched in (normally 1 Mb).
+fn scan_env(
+    args: &[&str],
+    pattern: &str,
+    input: &[u8],
+    files: &[(&str, &[u8])],
+    piece: Option<usize>,
+) -> Out {
     let dir = std::env::temp_dir().join(format!(
         "sfm_thr_{}_{:?}",
         std::process::id(),
@@ -17,7 +29,12 @@ fn scan(args: &[&str], pattern: &str, input: &[u8], files: &[(&str, &[u8])]) -> 
     }
     let pat = dir.join("pattern");
     std::fs::write(&pat, format!("{pattern}\n")).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_scan_for_matches"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_scan_for_matches"));
+    match piece {
+        Some(n) => cmd.env("SFM_PIECE", n.to_string()),
+        None => cmd.env_remove("SFM_PIECE"),
+    };
+    let mut child = cmd
         .current_dir(&dir)
         .args(args)
         .arg(&pat)
@@ -134,6 +151,34 @@ fn ignore_list() {
         &input,
         &[("ids", ids.as_bytes())],
     );
+}
+
+#[test]
+fn long_records_in_pieces() {
+    // pieces of a few bases: hits across piece ends, hits over several
+    // pieces, hits of length 0 (also just past the end), both strands
+    let input = fasta(16, 30);
+    let patterns = [
+        "p1=4...6 2...6 ~p1",
+        "p1=3...3 0...40 p1",
+        "p1=0...1",
+        "0...3 ACG",
+        "ACGT[1,0,1] 0...3 TTG",
+        "{(10,0,0,10),(0,10,10,0),(10,10,0,0)} > 25",
+        "p1=4...4 0...30 ~p1 2...5 $",
+        "p1=5...5 3...600 ~p1",
+    ];
+    for p in patterns {
+        for args in [&[][..], &["-c"][..], &["-o", "1"][..], &["-c", "-m", "40"][..]] {
+            let one = scan(args, p, &input, &[]);
+            for (t, piece) in [("2", 1), ("4", 3), ("8", 17), ("3", 400)] {
+                let mut a = vec!["-t", t];
+                a.extend_from_slice(args);
+                let many = scan_env(&a, p, &input, &[], Some(piece));
+                assert!(one == many, "-t {t}, pieces of {piece}, {args:?} {p}: output differs");
+            }
+        }
+    }
 }
 
 #[test]

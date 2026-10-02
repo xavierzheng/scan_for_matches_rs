@@ -9,7 +9,7 @@ mod engine;
 mod gz;
 mod sys;
 
-use engine::{Buf, DNA, Engine, PEPTIDE, compl};
+use engine::{Buf, DNA, Engine, PEPTIDE, SharedIndex, compl};
 use std::io::Read;
 
 const MAX_PAT_LINE_LN: usize = 32000;
@@ -320,6 +320,53 @@ struct Opts {
     show_overlaps: bool,
 }
 
+/// Turn the record in `data` (length `ln`) into its reverse complement.
+fn reverse_complement(data: &mut Buf, ln: usize) {
+    if ln > 0 {
+        let (mut a, mut b) = (0usize, ln - 1);
+        while a <= b {
+            let tmp = compl(data.v[a]);
+            data.v[a] = compl(data.v[b]);
+            data.v[b] = tmp;
+            a += 1;
+            if b == 0 {
+                break;
+            }
+            b -= 1;
+        }
+    }
+}
+
+/// Print the hit in `hits` (`n` units); on the reverse strand (`rev`) the
+/// positions are counted on the forward strand, as in the C code.
+#[allow(clippy::too_many_arguments)]
+fn print_hit<S: Sink>(
+    pr: &mut Printer<S>,
+    eng: &Engine,
+    id: &[u8],
+    rev: bool,
+    ln: usize,
+    hits: &[i64],
+    n: usize,
+    data: &Buf,
+) {
+    let cb = eng.cdata_base();
+    if !rev {
+        pr.hit(id, 1 + hits[0] - cb, 1 + (hits[n] - 1 - cb), hits, n, data, cb);
+    } else {
+        let l = ln as i64;
+        pr.hit(
+            id,
+            1 + (l - 1) - (hits[0] - cb),
+            1 + (l - 1) - (hits[n] - 1 - cb),
+            hits,
+            n,
+            data,
+            cb,
+        );
+    }
+}
+
 /// Search one record (forward strand, then the reverse complement with
 /// `-c`) and print its hits while `max_hits` allows.  Returns whether a
 /// hit was printed.  This is the body of the C main loop.
@@ -348,17 +395,7 @@ fn scan_record<S: Sink>(
     while *max_hits > 0 && i > 0 {
         hit_in_line = true;
         *max_hits -= 1;
-        let n = i as usize;
-        let cb = eng.cdata_base();
-        pr.hit(
-            id,
-            1 + hits[0] - cb,
-            1 + (hits[n] - 1 - cb),
-            hits,
-            n,
-            data,
-            cb,
-        );
+        print_hit(pr, eng, id, false, ln, hits, i as usize, data);
         i = if !opts.show_overlaps {
             eng.cont_match(hits)
         } else {
@@ -367,37 +404,14 @@ fn scan_record<S: Sink>(
     }
 
     if opts.complements {
-        if ln > 0 {
-            let (mut a, mut b) = (0usize, ln - 1);
-            while a <= b {
-                let tmp = compl(data.v[a]);
-                data.v[a] = compl(data.v[b]);
-                data.v[b] = tmp;
-                a += 1;
-                if b == 0 {
-                    break;
-                }
-                b -= 1;
-            }
-        }
+        reverse_complement(data, ln);
         eng.comp_data(data);
 
         let mut i = eng.first_match(ln as i32, hits);
         while *max_hits > 0 && i > 0 {
             hit_in_line = true;
             *max_hits -= 1;
-            let n = i as usize;
-            let l = ln as i64;
-            let cb = eng.cdata_base();
-            pr.hit(
-                id,
-                1 + (l - 1) - (hits[0] - cb),
-                1 + (l - 1) - (hits[n] - 1 - cb),
-                hits,
-                n,
-                data,
-                cb,
-            );
+            print_hit(pr, eng, id, true, ln, hits, i as usize, data);
             i = eng.cont_match(hits);
         }
     }
@@ -459,33 +473,169 @@ fn run_sequential(
     }
 }
 
+/// Records of at least two pieces are searched in pieces of this many
+/// start positions by several threads (when the pattern allows it).
+/// Tests set smaller pieces with the environment variable SFM_PIECE.
+fn piece_size() -> usize {
+    std::env::var("SFM_PIECE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(1 << 20)
+}
+
+/// A long record searched in pieces; the k-mer index of each strand is
+/// built once and shared by all engines.
+struct LongRec {
+    /// unique for each long record
+    serial: usize,
+    id: Vec<u8>,
+    body: Vec<u8>,
+    ln: usize,
+    index: [SharedIndex; 2],
+}
+
+/// Work for one worker.
+enum Job {
+    /// a whole record: id, body
+    Whole(Vec<u8>, Vec<u8>),
+    Piece(PieceJob),
+}
+
+/// Hits starting at `from..=last` of one strand of a long record.
+struct PieceJob {
+    rec: std::sync::Arc<LongRec>,
+    rev: bool,
+    from: usize,
+    last: usize,
+    /// the first piece of its strand
+    first: bool,
+    /// the last piece of the record (both strands)
+    end_of_record: bool,
+}
+
+/// The hits a worker found in a piece, formatted, with their start and
+/// end (offsets on the strand, end exclusive).  Without `-o` they are
+/// the hits the one-thread search finds when it reaches the piece with
+/// nothing to skip.
+struct PieceHits {
+    out: HitBuf,
+    starts: Vec<i64>,
+    pasts: Vec<i64>,
+}
+
 /// What a worker or the reader sends to the writer, in input order.
 enum Done {
     Hits(HitBuf),
+    Piece(PieceJob, PieceHits),
     Error(Vec<u8>),
     End,
 }
 
+/// An engine with the strand of a long record it holds (loaded once for
+/// all its pieces).
+struct PieceEngine {
+    eng: Engine,
+    data: Buf,
+    hits: Vec<i64>,
+    /// serial number and strand of the record loaded
+    loaded: Option<(usize, bool)>,
+    /// the last hit `join_piece` found with this engine was not empty
+    last_hit_nonempty: bool,
+}
+
+impl PieceEngine {
+    fn new(eng: Engine) -> PieceEngine {
+        PieceEngine {
+            eng,
+            data: Buf::new(),
+            hits: vec![0; 2000],
+            loaded: None,
+            last_hit_nonempty: true,
+        }
+    }
+
+    fn load(&mut self, rec: &LongRec, rev: bool) {
+        let key = (rec.serial, rev);
+        if self.loaded == Some(key) {
+            return;
+        }
+        self.data.store(&rec.body);
+        if rev {
+            reverse_complement(&mut self.data, rec.ln);
+        }
+        self.eng.set_shared_index(Some(rec.index[rev as usize].clone()));
+        self.eng.comp_data(&self.data);
+        self.loaded = Some(key);
+    }
+
+    /// Before searching a whole record with this engine.
+    fn unload(&mut self) {
+        if self.loaded.is_some() {
+            self.eng.set_shared_index(None);
+            self.loaded = None;
+        }
+    }
+
+    /// The hits of a piece: all of them (`all`, forward strand with -o),
+    /// or the chain of non-overlapping hits from its first start.
+    fn search(&mut self, job: &PieceJob, all: bool) -> PieceHits {
+        let rec = &*job.rec;
+        self.load(rec, job.rev);
+        let mut pr = Printer {
+            out: HitBuf::default(),
+            line: Vec::new(),
+        };
+        let (mut starts, mut pasts) = (Vec::new(), Vec::new());
+        let cb = self.eng.cdata_base();
+        let mut i = self.eng.first_match_in(
+            rec.ln as i32,
+            job.from as i64,
+            job.last as i64,
+            &mut self.hits,
+        );
+        while i > 0 {
+            let n = i as usize;
+            print_hit(&mut pr, &self.eng, &rec.id, job.rev, rec.ln, &self.hits, n, &self.data);
+            starts.push(self.hits[0] - cb);
+            pasts.push(self.hits[n] - cb);
+            i = if all {
+                self.eng.next_match(&mut self.hits)
+            } else {
+                self.eng.cont_match(&mut self.hits)
+            };
+        }
+        PieceHits {
+            out: pr.out,
+            starts,
+            pasts,
+        }
+    }
+}
+
 /// Several threads: a reader thread, `threads` workers that each search
-/// whole records with their own engine, and this thread, which prints the
-/// results in input order.  Hit limit (`-m`) and miss limit (`-n`) are
-/// applied in input order, so the output equals the one-thread output.
+/// whole records, or pieces of long records, with their own engine, and
+/// this thread, which prints the results in input order.  Hit limit
+/// (`-m`) and miss limit (`-n`) are applied in input order, so the output
+/// equals the one-thread output.
 #[allow(clippy::too_many_arguments)]
 fn run_threads(
     threads: usize,
     line: Vec<u8>,
     seq_type: i32,
     opts: Opts,
+    split: bool,
     ignore: std::collections::HashSet<Vec<u8>>,
     mut max_hits: i32,
     mut stop_after: i32,
 ) {
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
-    type Job = (usize, Vec<u8>, Vec<u8>);
-    let (job_tx, job_rx) = mpsc::sync_channel::<Job>(2 * threads);
+    let (job_tx, job_rx) = mpsc::sync_channel::<(usize, Job)>(2 * threads);
     let job_rx = Arc::new(Mutex::new(job_rx));
     let (done_tx, done_rx) = mpsc::channel::<(usize, Done)>();
+    let split = split && !opts.protein;
+    let piece = piece_size();
 
     let tx = done_tx.clone();
     std::thread::spawn(move || {
@@ -497,10 +647,49 @@ fn run_threads(
                     if ignore.contains(&id) {
                         continue;
                     }
-                    if job_tx.send((k, id, body)).is_err() {
-                        return;
+                    let ln = body.iter().position(|&b| b == 0).unwrap_or(body.len());
+                    if !split || ln < 2 * piece {
+                        if job_tx.send((k, Job::Whole(id, body))).is_err() {
+                            return;
+                        }
+                        k += 1;
+                        continue;
                     }
-                    k += 1;
+                    let rec = Arc::new(LongRec {
+                        serial: k,
+                        id,
+                        body,
+                        ln,
+                        index: Default::default(),
+                    });
+                    let strands: &[bool] = if opts.complements {
+                        &[false, true]
+                    } else {
+                        &[false]
+                    };
+                    for &rev in strands {
+                        let mut from = 0;
+                        while from <= ln {
+                            // a hit of length 0 can start just past the end
+                            let mut last = from + piece - 1;
+                            if last + 1 >= ln {
+                                last = ln;
+                            }
+                            let job = PieceJob {
+                                rec: Arc::clone(&rec),
+                                rev,
+                                from,
+                                last,
+                                first: from == 0,
+                                end_of_record: last == ln && rev == opts.complements,
+                            };
+                            if job_tx.send((k, Job::Piece(job))).is_err() {
+                                return;
+                            }
+                            k += 1;
+                            from = last + 1;
+                        }
+                    }
                 }
                 ReadItem::Error(msg) => {
                     let _ = tx.send((k, Done::Error(msg)));
@@ -524,27 +713,38 @@ fn run_threads(
             .spawn(move || {
                 let mut eng = Engine::new();
                 eng.parse_cmd(&line, seq_type);
+                let mut pe = PieceEngine::new(eng);
                 let mut data = Buf::new();
                 let mut hits: Vec<i64> = vec![0; 2000];
                 loop {
                     let job = rx.lock().unwrap().recv();
-                    let Ok((k, id, body)) = job else { return };
-                    let mut pr = Printer {
-                        out: HitBuf::default(),
-                        line: Vec::new(),
+                    let Ok((k, job)) = job else { return };
+                    let done = match job {
+                        Job::Whole(id, body) => {
+                            pe.unload();
+                            let mut pr = Printer {
+                                out: HitBuf::default(),
+                                line: Vec::new(),
+                            };
+                            let mut unlimited = i32::MAX;
+                            scan_record(
+                                &mut pe.eng,
+                                &mut data,
+                                &mut hits,
+                                &mut pr,
+                                &id,
+                                &body,
+                                opts,
+                                &mut unlimited,
+                            );
+                            Done::Hits(pr.out)
+                        }
+                        Job::Piece(job) => {
+                            let ph = pe.search(&job, opts.show_overlaps && !job.rev);
+                            Done::Piece(job, ph)
+                        }
                     };
-                    let mut unlimited = i32::MAX;
-                    scan_record(
-                        &mut eng,
-                        &mut data,
-                        &mut hits,
-                        &mut pr,
-                        &id,
-                        &body,
-                        opts,
-                        &mut unlimited,
-                    );
-                    if tx.send((k, Done::Hits(pr.out))).is_err() {
+                    if tx.send((k, done)).is_err() {
                         return;
                     }
                 }
@@ -556,6 +756,15 @@ fn run_threads(
     let mut out = sys::Out::new();
     let mut waiting = std::collections::BTreeMap::new();
     let mut next = 0usize;
+    // a long record: end of the last hit printed on this strand, and
+    // whether the record has a hit; an engine for searching again
+    let mut past = 0i64;
+    let mut rec_hit = false;
+    let mut weng: Option<PieceEngine> = None;
+    let mut wpr = Printer {
+        out: HitBuf::default(),
+        line: Vec::new(),
+    };
     while max_hits > 0 {
         let item = match waiting.remove(&next) {
             Some(d) => d,
@@ -572,22 +781,118 @@ fn run_threads(
             Done::End => break,
             Done::Error(msg) => read_error(&msg),
             Done::Hits(h) => {
-                let mut start = 0;
-                let mut printed = 0;
-                for &end in &h.ends {
-                    if max_hits <= 0 {
-                        break;
-                    }
-                    out.write(&h.buf[start..end]);
-                    start = end;
-                    max_hits -= 1;
-                    printed += 1;
-                }
+                let printed = print_hits(&mut out, &h, 0, &mut max_hits);
                 if printed == 0 {
                     missed(&mut stop_after);
                 }
             }
+            Done::Piece(job, ph) => {
+                if job.first {
+                    past = 0;
+                    if !job.rev {
+                        rec_hit = false;
+                    }
+                }
+                if opts.show_overlaps && !job.rev {
+                    // every hit, in search order
+                    rec_hit |= print_hits(&mut out, &ph.out, 0, &mut max_hits) > 0;
+                } else {
+                    let we = weng.get_or_insert_with(|| {
+                        let mut e = Engine::new();
+                        e.parse_cmd(&line, seq_type);
+                        PieceEngine::new(e)
+                    });
+                    rec_hit |= join_piece(
+                        &mut out, &job, &ph, we, &mut wpr, &mut past, &mut max_hits,
+                    );
+                }
+                if job.end_of_record && !rec_hit && max_hits > 0 {
+                    missed(&mut stop_after);
+                }
+            }
         }
+    }
+}
+
+/// Print the hits of `h` from hit `from` on while `max_hits` allows;
+/// returns how many were printed.
+fn print_hits(out: &mut sys::Out, h: &HitBuf, from: usize, max_hits: &mut i32) -> usize {
+    let mut start = if from == 0 { 0 } else { h.ends[from - 1] };
+    let mut printed = 0;
+    for &end in &h.ends[from..] {
+        if *max_hits <= 0 {
+            break;
+        }
+        out.write(&h.buf[start..end]);
+        start = end;
+        *max_hits -= 1;
+        printed += 1;
+    }
+    printed
+}
+
+/// Continue the one-thread search ("next hit that starts at or after
+/// the end of the last one") through a piece.  `past` is the end of the
+/// last hit printed on the strand.  The worker's hits are right from the
+/// first one that the true search reaches; before that the piece is
+/// searched again from `past` with `we`.  Returns whether a hit was
+/// printed.
+#[allow(clippy::too_many_arguments)]
+fn join_piece(
+    out: &mut sys::Out,
+    job: &PieceJob,
+    ph: &PieceHits,
+    we: &mut PieceEngine,
+    wpr: &mut Printer<HitBuf>,
+    past: &mut i64,
+    max_hits: &mut i32,
+) -> bool {
+    let last = job.last as i64;
+    let mut printed = false;
+    let mut again = false; // `we` holds a search of this piece
+    loop {
+        if *past > last || *max_hits <= 0 {
+            return printed;
+        }
+        // the worker's first hit at or after `past`
+        let j = ph.starts.partition_point(|&s| s < *past);
+        // the worker searched on from the end of hit j-1, at or before
+        // `past`: from here on its hits are the true ones.  (When the
+        // last hit has length 0 the search goes on at its own start,
+        // so only an ending after the start is used.)
+        let synced = j == 0 || ph.pasts[j - 1] <= *past;
+        if synced && (!again || we.last_hit_nonempty) {
+            if j < ph.starts.len() {
+                let n = print_hits(out, &ph.out, j, max_hits);
+                if n > 0 {
+                    printed = true;
+                    *past = ph.pasts[j + n - 1];
+                }
+            }
+            return printed;
+        }
+        // search the piece again from `past`
+        let i = if !again {
+            again = true;
+            we.load(&job.rec, job.rev);
+            we.eng.first_match_in(job.rec.ln as i32, *past, last, &mut we.hits)
+        } else {
+            we.eng.cont_match(&mut we.hits)
+        };
+        if i <= 0 {
+            return printed;
+        }
+        let n = i as usize;
+        let cb = we.eng.cdata_base();
+        wpr.out.buf.clear();
+        wpr.out.ends.clear();
+        print_hit(wpr, &we.eng, &job.rec.id, job.rev, job.rec.ln, &we.hits, n, &we.data);
+        out.write(&wpr.out.buf);
+        *max_hits -= 1;
+        printed = true;
+        let start = we.hits[0] - cb;
+        *past = we.hits[n] - cb;
+        we.last_hit_nonempty = *past > start;
     }
 }
 
@@ -773,11 +1078,13 @@ fn real_main() {
     };
     // patterns that use matches of earlier sequences stay on one thread
     if threads > 1 && !eng.uses_earlier_state() && max_hits > 0 {
+        let split = eng.can_split();
         run_threads(
             threads,
             line,
             if protein { PEPTIDE } else { DNA },
             opts,
+            split,
             ignore,
             max_hits,
             stop_after,

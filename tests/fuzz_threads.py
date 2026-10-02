@@ -5,7 +5,9 @@ usage: fuzz_threads.py BINARY [N_CASES] [SEED] [THREADS]
 
 Random patterns (from fuzz_compare.py, normal and stress), FASTA with many
 records of very different lengths, random options (-c, -o, -m, -n, -i,
--p).  Runs two cases at a time (so 2 x THREADS search threads).
+-p).  The run with threads also gets small pieces (SFM_PIECE), so long
+records are searched in pieces.  Runs two cases at a time (so 2 x THREADS
+search threads).
 """
 import os
 import random
@@ -23,12 +25,15 @@ SEED = int(sys.argv[3]) if len(sys.argv) > 3 else 1
 T = sys.argv[4] if len(sys.argv) > 4 else "4"
 
 
-def run(args, pat, inp, d):
+def run(args, pat, inp, d, piece=None):
     pp = os.path.join(d, "pat")
     with open(pp, "wb") as f:
         f.write(pat)
     try:
-        p = subprocess.run([BIN] + args + [pp], input=inp, capture_output=True, timeout=60, cwd=d)
+        env = dict(os.environ)
+        if piece:
+            env["SFM_PIECE"] = str(piece)
+        p = subprocess.run([BIN] + args + [pp], input=inp, capture_output=True, timeout=60, cwd=d, env=env)
     except subprocess.TimeoutExpired:
         return None
     return (p.returncode, p.stdout, p.stderr)
@@ -58,7 +63,7 @@ def one(case):
             args += ["-i", "ign"]
         inp = fasta.encode("latin1")
         a = run(args, pat, inp, d)
-        b = run(["-t", T] + args, pat, inp, d)
+        b = run(["-t", T] + args, pat, inp, d, r.choice([None, 1, 2, 3, 7, 30, 200, 1000]))
     if a is None or b is None:
         return ("timeout", None)
     return ("ok" if a == b else "DIFF", (pat, args, fasta[:300], a[0], b[0]))
