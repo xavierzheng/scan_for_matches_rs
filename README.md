@@ -156,8 +156,8 @@ mismatches, inserts and deletes together can take longer than in the
 original, because the choices it skipped are now tried.
 
 (After 0.1.0) A range followed by an exact word, an exact reverse
-complement or an exact repeat, for example `p1=8...12 50...30000 ~p1`,
-is much faster: only the gap lengths where the next unit can match are
+complement, a reverse complement with mismatches only (`~p1[1,0,0]`) or
+an exact repeat, for example `p1=8...12 50...30000 ~p1`, is much faster: only the gap lengths where the next unit can match are
 tried (same order, same output).  For long gaps a 5-mer position index
 of the record is used; it takes about 4 bytes per base for each thread
 (a 74 Mb chromosome: about 300 MB per thread).  On 1 Mb of B. napus,

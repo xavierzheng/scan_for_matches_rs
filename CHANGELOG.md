@@ -2,6 +2,16 @@
 
 ## Unreleased (0.2.0)
 
+- Faster gap skipping: the units after the one that follows a range
+  (exact words, exact `~pN`, `pN` of names matched before the range) are
+  checked together with it, 8 bases at a time; a reverse complement with
+  mismatches only (`~pN[m,0,0]`) is skipped too.  The 22 TIR patterns on
+  B. napus chromosome A1, one thread each: 402 to 107 CPU-s in total
+  (02_DTA_short5to7 149 s to 18 s, 09_DTC_CACTA_relaxed1 21 s to 0.5 s),
+  output identical.  Also fixes a slow case of the step above (a short
+  window before a long reverse complement: 10 times slower than without
+  skipping).
+
 - `-t N` also splits a long record (2 Mb or more) into pieces of 1 Mb of
   start positions that are searched by several threads.  The pieces are
   joined in order with the one-thread rule (the next hit starts at or
