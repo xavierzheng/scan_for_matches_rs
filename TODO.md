@@ -1,10 +1,49 @@
 # TODO
 
+## 0.3.0: output formats (next; local plan `docs/PLAN-0.3.0.md`)
+
+Default output stays byte-identical to 0.2.0; new formats only with the
+new options, identical for every `-t N`.
+
+- [ ] Map each pattern unit to its source line, and each hit entry to
+      its unit (alternatives `( | )` and zero-width units make this
+      non-trivial).
+- [ ] `--format jsonl`: one object per hit with each unit's coordinates
+      (1-based, closed, start <= end on both strands) and text.
+- [ ] Labels in `%` comments (old programs ignore them):
+      `%@element TYPE key=value ...` for the element, `%@ TYPE ...` at
+      the end of a line for one feature made of the units on that line.
+- [ ] `--format gff3`: column 3 = the label type (free text);
+      column 9 = `ID`, `Parent`, `Name`, `Classification` (from the
+      label, for example `TIR/DTC`), `Method` (default `structural`);
+      `Sequence_ontology` only when given or when the type is a known SO
+      name (optional: many patterns have no SO term).  Every hit gets a
+      unique Name, prefix + counter without fixed width (`DTC1`,
+      `DTC123456`), shared by all lines of that hit.  Options
+      `--name-prefix`, `--name-start`, `--type`.
+- [ ] `--format bed6` / `bed12`.
+- [ ] `--dedup`: drop the reverse-strand copy of an element that the
+      forward scan already reported (patterns that read the same on both
+      strands, such as TIR patterns, report each element twice with
+      `-c`); rule still to be decided with the user.
+- [ ] Tests for every format (golden files, coordinates read back from
+      the FASTA give the printed text, identity across `-t` and piece
+      sizes); labelled copies of the TIR patterns; README; release.
+
+## Later
+
+- [ ] `--lint` and `--explain` for patterns (see group C for traps).
+- [ ] Merge tool: several patterns/runs → genome-wide unique Names.
+- [ ] Several patterns in one run (read the genome once).
+- [ ] Converter JASPAR matrix → integer weight unit with a p-value
+      cutoff (the weight unit already works for PWMs; no engine change).
+
 ## Platforms
 
 - [ ] Linux x86_64: decide if Linux needs its own reference.
       CI result (2026-10-01, GitHub `ubuntu-latest`, AMD EPYC 9V74 with
-      AVX512; there is no SIMD code, so CPU features do not matter):
+      AVX512; there is no SIMD code (0.2.0 compares 8 bases with plain
+      64-bit integers), so CPU features do not matter):
       - builds and runs; the original test suite passes;
       - 786 of 788 golden cases (recorded on macOS arm64) match;
       - the 2 differences are undefined-behaviour cases:
@@ -12,7 +51,7 @@
         macOS none) and data byte 0xA5 (reads a byte of a heap pointer;
         Linux heap addresses differ);
       - version 0.1.0 (no undefined behaviour left): all tests pass on
-        Linux x86_64 in CI;
+        Linux x86_64 in CI; version 0.2.0 too (CI 2026-10-03);
       - not yet compared with the C program built on Linux (its memory
         layout, and so its undefined-behaviour results, differ from the
         macOS build).  Normal input is expected to match.
@@ -90,3 +129,29 @@
       within the mismatch/insert/delete limits are not found (for example
       when an early match forces a later failure).  The original works the
       same way; a complete search would change results and speed.
+- [ ] A reversed range `a...b` with `a > b` is accepted without a
+      warning and matches only the length `a`.
+- [ ] `-o` takes a value, so `-o -c pattern` uses `-c` as that value:
+      the reverse strand is not searched and there is no error.
+- [ ] A pattern that reads the same on both strands (all TIR patterns)
+      reports each element twice with `-c` (`[a,b]` and `[b,a]`).
+- [ ] The pattern file is joined into one line (newlines become spaces)
+      and cut at 31 999 bytes without a warning.
+- [ ] A weight-matrix unit scores IUPAC codes and `N` in the data as
+      averages of the matching weights, while all other units never
+      match `N`.
+
+## Speed: known limits (0.2.0)
+
+- [ ] Gap skipping works only when the range is followed by an exact
+      word, an exact `~pN`, `~pN[m,0,0]` or an exact `pN`.  A range
+      followed by an inexact word, `pN` with errors, `~pN` with inserts
+      or deletes, a weight matrix or another range is searched length by
+      length (slow for wide ranges such as `50...30000`).
+- [ ] With `-t N` on many long records and a fast pattern, splitting
+      long records into pieces is slower than one thread per record
+      (each thread copies each long record; whole genome, 00_DTC `-c`:
+      5.8 s without pieces, 9.3 s with them).  Sharing one copy needs a
+      change of the engine memory layout.
+- [ ] Each engine maps 4 GB of address space (`CD_CAP`) and never unmaps
+      it (fine for a command-line run).
