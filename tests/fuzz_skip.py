@@ -3,7 +3,11 @@
 skipping, for example 0.1.0, and one with it) on patterns with wide ranges
 followed by exact words, exact reverse complements and exact repeats.
 
-usage: fuzz_skip.py OLD_BINARY NEW_BINARY [N_CASES] [SEED]
+usage: fuzz_skip.py [--chain] OLD_BINARY NEW_BINARY [N_CASES] [SEED]
+
+--chain: every pattern has a range followed by several units that check
+fixed strings (words, named words, ~pN and pN, also of names in the chain
+or of the range), which `next_start` checks together.
 """
 import os
 import random
@@ -12,9 +16,11 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
-OLD, NEW = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
-N = int(sys.argv[3]) if len(sys.argv) > 3 else 1000
-SEED = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+CHAIN = "--chain" in sys.argv
+ARGS = [a for a in sys.argv[1:] if a != "--chain"]
+OLD, NEW = os.path.abspath(ARGS[0]), os.path.abspath(ARGS[1])
+N = int(ARGS[2]) if len(ARGS) > 2 else 1000
+SEED = int(ARGS[3]) if len(ARGS) > 3 else 1
 COMP = {"a": "t", "c": "g", "g": "c", "t": "a"}
 
 
@@ -64,6 +70,57 @@ def pattern(r):
     return " ".join(units)
 
 
+def chain_pattern(r):
+    units = []
+    names = []
+    nxt = 1
+    for _ in range(r.randint(1, 2)):
+        a = r.randint(0, 6)
+        units.append("p%d=%d...%d" % (nxt, a, a + r.choice([0, 0, 1, 2])))
+        names.append(nxt)
+        nxt += 1
+    if r.random() < 0.15:
+        units.insert(0, r.choice(["acg", "t", "1...3"]))
+    a = r.randint(0, 5)
+    b = a + r.choice([10, 60, 300, 2000])
+    rname = None
+    if r.random() < 0.3:
+        rname = nxt
+        nxt += 1
+        units.append("p%d=%d...%d" % (rname, a, b))
+    else:
+        units.append("%d...%d" % (a, b))
+    chain_names = []
+    for _ in range(r.randint(2, 4)):
+        k = r.random()
+        pool = names + chain_names + ([rname] if rname and r.random() < 0.3 else [])
+        if k < 0.35:
+            units.append("~p%d" % r.choice(pool))
+        elif k < 0.6:
+            units.append("p%d" % r.choice(pool))
+        elif k < 0.85:
+            w = "".join(r.choice("acgt" if r.random() < 0.9 else "acgtnry") for _ in range(r.randint(1, 6)))
+            if r.random() < 0.3:
+                units.append("p%d=%s" % (nxt, w))
+                chain_names.append(nxt)
+                nxt += 1
+            else:
+                units.append(w)
+        elif k < 0.92:
+            units.append("~p%d[1,0,0]" % r.choice(pool))
+        else:
+            units.append("(acg | tt)")
+    if r.random() < 0.3:
+        units.append("0...%d" % r.randint(0, 20))
+    if r.random() < 0.2:
+        units.append(r.choice(["acgt", "~p1", "p1"]))
+    if r.random() < 0.15:
+        # the range and the chain inside an alternative
+        k = len(names) + (1 if units[0][0] not in "p" else 0)
+        units = units[:k] + ["(" + " ".join(units[k:]) + " | tt)", r.choice(["acg", "p1", "~p1"])]
+    return " ".join(units)
+
+
 def sequence(r, n):
     s = [r.choice("acgt") for _ in range(n)]
     # planted hairpins and repeats
@@ -74,6 +131,13 @@ def sequence(r, n):
         gap = r.randint(0, 400)
         ins = stem + "".join(r.choice("acgt") for _ in range(gap)) + (rc(stem) if r.random() < 0.6 else stem)
         s[i:i] = list(ins)
+    # planted TIR-like elements: TSD, TIR, gap, reverse complement, TSD
+    for _ in range(r.randint(0, 4) if CHAIN else 0):
+        tsd = "".join(r.choice("acgt") for _ in range(r.randint(0, 6)))
+        tir = "".join(r.choice("acgt") for _ in range(r.randint(1, 10)))
+        mid = "".join(r.choice("acgt") for _ in range(r.randint(0, 400)))
+        i = r.randint(0, max(0, len(s) - 1))
+        s[i:i] = list(tsd + tir + mid + rc(tir) + tsd)
     if r.random() < 0.2:
         for _ in range(r.randint(1, 10)):
             s[r.randrange(len(s))] = r.choice("nNryRY")
@@ -94,7 +158,14 @@ def run(b, args, pat, inp):
         with open(pp, "w") as f:
             f.write(pat + "\n")
         p = subprocess.Popen([b] + args + [pp], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        threading.Thread(target=lambda: (p.stdin.write(inp), p.stdin.close()), daemon=True).start()
+        def feed():
+            try:
+                p.stdin.write(inp)
+                p.stdin.close()
+            except BrokenPipeError:
+                pass  # the program was stopped (time or output limit)
+
+        threading.Thread(target=feed, daemon=True).start()
         timer = threading.Timer(60, p.kill)
         timer.start()
         h, n = hashlib.sha1(), 0
@@ -119,7 +190,7 @@ def run(b, args, pat, inp):
 
 def one(case):
     r = random.Random(SEED * 1000003 + case)
-    pat = pattern(r)
+    pat = chain_pattern(r) if CHAIN else pattern(r)
     recs = "".join(">r%d\n%s\n" % (k, sequence(r, r.choice([50, 300, 2000, 6000]))) for k in range(r.randint(1, 3)))
     args = (["-c"] if r.random() < 0.4 else []) + (["-o", "1"] if r.random() < 0.3 else [])
     a = run(OLD, args, pat, recs.encode())

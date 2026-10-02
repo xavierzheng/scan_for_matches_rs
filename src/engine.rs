@@ -855,6 +855,11 @@ pub struct Engine {
     start_lim: i64,
     /// scratch: masks of the unit after a range
     masks: Vec<u8>,
+    /// `masks[k..k + 8]` packed in one word, as (k, word), when the masks
+    /// checked are all plain bases; empty: check byte by byte.
+    mask_words: Vec<(usize, u64)>,
+    /// (range, units after its skip target that `next_start` checks too)
+    skip_chains: Vec<(i64, Vec<i64>)>,
     /// punit_to_code for indexes 0..127 (never overwritten)
     p2c_lo: [u8; 128],
 }
@@ -904,6 +909,8 @@ impl Engine {
             shared_kidx: None,
             start_lim: i64::MAX,
             masks: Vec::new(),
+            mask_words: Vec::new(),
+            skip_chains: Vec::new(),
             p2c_lo: [0; 128],
         };
         for (i, v) in KNOWN_CHAR.iter().enumerate() {
@@ -1804,6 +1811,12 @@ impl Engine {
                         0
                     };
                     self.w64(pu + O_SKIP, target);
+                    if target != 0 {
+                        let chain = self.skip_chain(pu, target);
+                        if !chain.is_empty() {
+                            self.skip_chains.push((pu, chain));
+                        }
+                    }
                 }
                 OR_PUNIT => {
                     let (a, b) = (self.r64(pu + O_U0), self.r64(pu + O_U8));
@@ -1814,6 +1827,32 @@ impl Engine {
             }
             pu = self.r64(pu + O_NXT);
         }
+    }
+
+    /// The units after `n` (the unit after the range `range`) that
+    /// `next_start` checks together with `n`.  Each checks a fixed string
+    /// right after the one before, and none refers to the range or to `n`
+    /// or these units, so when one fails at a gap length the search goes
+    /// on with the next length (there is no other choice to try).
+    fn skip_chain(&self, range: i64, n: i64) -> Vec<i64> {
+        let mut seen = vec![range, n];
+        let mut chain = Vec::new();
+        let mut u = n;
+        while chain.len() < 16 {
+            u = Self::next_punit::<Checked>(self.mem, u);
+            if u == 0 || !self.skippable(u, range) {
+                break;
+            }
+            let t = self.r32(u + O_TYPE);
+            if (t == COMPL_PUNIT || t == REPEAT_PUNIT)
+                && seen.contains(&self.names(self.r32(u + O_U12)))
+            {
+                break;
+            }
+            seen.push(u);
+            chain.push(u);
+        }
+        chain
     }
 
     /// Can lengths of the range `range` be skipped when `n` follows it?
@@ -1841,15 +1880,39 @@ impl Engine {
     /// The masks the unit `n` checks at its position: data code `d` (low
     /// nibble) matches mask `k` when `d` is one plain base and `d` is in
     /// the mask.  `Some(None)`: the unit matches anywhere (empty capture);
-    /// `None`: it never matches.
-    fn unit_masks(&mut self, n: i64) -> Option<Option<()>> {
-        let m = self.mem;
+    /// `None`: it never matches.  Only the first `max` masks are made: a
+    /// prefix is enough, the matcher checks the rest (and making all of
+    /// them costs more than it saves when the unit is long).
+    fn unit_masks(&mut self, n: i64, range: i64, max: usize) -> Option<Option<()>> {
         let mut masks = std::mem::take(&mut self.masks);
         masks.clear();
-        let r = match self.r32(n + O_TYPE) {
+        let r = self.push_unit_masks(n, &mut masks, max);
+        if r == Some(Some(())) {
+            let chains = std::mem::take(&mut self.skip_chains);
+            if let Some((_, chain)) = chains.iter().find(|c| c.0 == range) {
+                for &u in chain {
+                    // a prefix of the chain is enough
+                    if masks.len() >= max || self.push_unit_masks(u, &mut masks, max).is_none() {
+                        break;
+                    }
+                }
+            }
+            self.skip_chains = chains;
+        }
+        self.masks = masks;
+        r
+    }
+
+    /// Append the masks of unit `n` (see `unit_masks`).
+    fn push_unit_masks(&self, n: i64, masks: &mut Vec<u8>, max: usize) -> Option<Option<()>> {
+        let m = self.mem;
+        match self.r32(n + O_TYPE) {
             EXACT_PUNIT => {
                 let code = self.r64(n + O_U8);
                 for k in 0..self.r32(n + O_U0) as i64 {
+                    if masks.len() >= max {
+                        break;
+                    }
                     masks.push(m.rb(code + k) & 15);
                 }
                 Some(Some(()))
@@ -1859,6 +1922,9 @@ impl Engine {
                 let (p1, ln) = (self.r64(pu1 + O_HIT), self.r32(pu1 + O_MLEN) as i64);
                 let mut ok = Some(Some(()));
                 for k in 0..ln {
+                    if masks.len() >= max {
+                        break;
+                    }
                     let c = m.rb(p1 + ln - 1 - k);
                     if KNOWN_CHAR[(c & 15) as usize] == 0 {
                         ok = None; // the C loop fails at this character
@@ -1873,37 +1939,84 @@ impl Engine {
                 let pu1 = m.names(self.r32(n + O_U12));
                 let (p1, ln) = (self.r64(pu1 + O_HIT), self.r32(pu1 + O_MLEN) as i64);
                 for k in 0..ln {
+                    if masks.len() >= max {
+                        break;
+                    }
                     masks.push(m.rb(p1 + k) & 15);
                 }
                 if ln == 0 { Some(None) } else { Some(Some(())) }
             }
-        };
-        self.masks = masks;
-        r
+        }
     }
 
-    /// Does the data at `x` match the masks (and end by `er`)?
+    /// Does the data at `x` match the masks from `masks[from]` on (and end
+    /// by `er`)?  Uses `mask_words` (set by `set_mask_words(from)`) when it
+    /// is not empty.
     #[inline(always)]
-    fn masks_match_at(&self, x: i64, er: i64) -> bool {
+    fn masks_match_at(&self, x: i64, er: i64, from: usize) -> bool {
         let n = self.masks.len() as i64;
         if x + n - 1 > er {
             return false;
         }
+        if !self.mask_words.is_empty() {
+            // a plain base mask matches only the same code; x..=x+n-1 lies
+            // in the coded sequence
+            return self.mask_words.iter().all(|&(k, w)| {
+                let d = unsafe { ((x as usize + k) as *const u64).read_unaligned() };
+                d & 0x0f0f_0f0f_0f0f_0f0f == w
+            });
+        }
         let m = self.mem;
-        self.masks.iter().enumerate().all(|(k, &mk)| {
-            let d = m.rb(x + k as i64) & 15;
+        self.masks[from..].iter().enumerate().all(|(k, &mk)| {
+            let d = m.rb(x + (from + k) as i64) & 15;
             KNOWN_CHAR[d as usize] != 0 && (d & mk) == d
         })
+    }
+
+    /// Pack `masks[from..]` in words for `masks_match_at`, when they are
+    /// all plain bases and at least 8; the last word ends at the last mask.
+    fn set_mask_words(&mut self, from: usize) {
+        self.mask_words.clear();
+        let len = self.masks.len();
+        if len < from + 8 || self.masks[from..].iter().any(|&mk| base2(mk).is_none()) {
+            return;
+        }
+        let word = |k: usize| u64::from_le_bytes(self.masks[k..k + 8].try_into().unwrap());
+        let mut k = from;
+        while k + 8 < len {
+            self.mask_words.push((k, word(k)));
+            k += 8;
+        }
+        self.mask_words.push((len - 8, word(len - 8)));
     }
 
     /// The first position in `xlo..=xhi` where the unit `n` (marked by
     /// setup_skips) can match: the same position the C search reaches by
     /// trying every gap length.
-    fn next_start(&mut self, n: i64, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
+    #[inline(always)]
+    fn next_start(&mut self, n: i64, range: i64, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
         if xlo > xhi {
             return None;
         }
-        match self.unit_masks(n) {
+        if xhi - xlo < 8 {
+            // a few lengths: making the masks costs more than letting the
+            // matcher try each length (most fail at the first base)
+            return Some(xlo);
+        }
+        self.next_start_far(n, range, xlo, xhi, er)
+    }
+
+    /// `next_start` for a window of at least 8 positions.
+    #[inline(never)]
+    fn next_start_far(&mut self, n: i64, range: i64, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
+        // masks made: the index key and 3 words to check, or 2 words when
+        // every position of a short window is checked
+        let max = if xhi - xlo >= SCAN_LIMIT {
+            KIDX_K + 24
+        } else {
+            16
+        };
+        match self.unit_masks(n, range, max) {
             None => return None,
             Some(None) => return Some(xlo),
             Some(Some(())) => {}
@@ -1923,8 +2036,11 @@ impl Engine {
             None
         };
         let Some(key) = key else {
-            return (xlo..=xhi).find(|&x| self.masks_match_at(x, er));
+            self.set_mask_words(0);
+            return (xlo..=xhi).find(|&x| self.masks_match_at(x, er, 0));
         };
+        // the index holds the positions where masks[..KIDX_K] match
+        self.set_mask_words(KIDX_K);
         let base = self.mem.cd as i64;
         if self.shared_kidx.is_none() {
             self.build_kidx(er);
@@ -1946,7 +2062,7 @@ impl Engine {
             if x > xhi {
                 break;
             }
-            if self.masks_match_at(x, er) {
+            if self.masks_match_at(x, er, KIDX_K) {
                 return Some(x);
             }
         }
@@ -2033,6 +2149,7 @@ impl Engine {
                 }
                 self.set_anchors(self.mem.sa(A_PU_S), 0);
                 let skip = self.seq_type == DNA && !self.uses_earlier_state();
+                self.skip_chains.clear();
                 self.setup_skips(self.mem.sa(A_PU_S), skip, 0);
                 self.w64(self.mem.sa(A_AD_PU_S), self.mem.sa(A_PU_S));
                 self.max_mats(self.mem.sa(A_PU_S))
@@ -2661,7 +2778,7 @@ impl Engine {
                                         let lmax = (mn as i64 + g32!(O_U4) as i64)
                                             .min(er - hit + 1)
                                             .max(mn as i64);
-                                        match self.next_start(n, sr, hit + lmax, er) {
+                                        match self.next_start(n, cr, sr, hit + lmax, er) {
                                             Some(x) => {
                                                 s32!(O_U8, (x - hit + 1) as i32);
                                                 sr = x;
@@ -2906,7 +3023,8 @@ impl Engine {
                                     // always tried
                                     lmax = lmax.max(min as i64);
                                 }
-                                if let Some(x) = self.next_start(n, hit + from, hit + lmax, er) {
+                                if let Some(x) = self.next_start(n, cr, hit + from, hit + lmax, er)
+                                {
                                     s64!(O_HIT, hit);
                                     s32!(O_U8, (x - hit + 1) as i32);
                                     sr = x;
