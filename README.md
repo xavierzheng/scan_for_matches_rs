@@ -94,12 +94,12 @@ Only these (details in `CHANGELOG.md`):
 * `-c` with `-p` is an error (exit status 2);
 * with `-c`, a lowercase `s` is shown as `s` (the original showed `S`);
 * bytes 0x80 and above are unknown characters, like `x`;
-* (after 0.1.0) gzip / bgzip compressed FASTA input is accepted;
-* (after 0.1.0) `-t N` searches records in parallel.  A pattern that reads
+* (0.2.0) gzip / bgzip compressed FASTA input is accepted;
+* (0.2.0) `-t N` searches records in parallel.  A pattern that reads
   a name before it is certainly matched (defined later, or only in one
   branch of `( | )`) uses matches of earlier sequences, so it is always
   searched on one thread;
-* (after 0.1.0) gap lengths that cannot lead to a hit are skipped (see
+* (0.2.0) gap lengths that cannot lead to a hit are skipped (see
   Speed); the output does not change.
 
 Unchanged on purpose (see `TODO.md`, group C): a pattern whose longest
@@ -155,23 +155,40 @@ Typical patterns run at about the speed of the C program (from 0.8× to
 mismatches, inserts and deletes together can take longer than in the
 original, because the choices it skipped are now tried.
 
-(After 0.1.0) A range followed by an exact word, an exact reverse
-complement, a reverse complement with mismatches only (`~p1[1,0,0]`) or
-an exact repeat, for example `p1=8...12 50...30000 ~p1`, is much faster: only the gap lengths where the next unit can match are
-tried (same order, same output).  For long gaps a 5-mer position index
-of the record is used; it takes about 4 bytes per base for each thread
-(a 74 Mb chromosome: about 300 MB per thread).  On 1 Mb of B. napus,
-22 TIR patterns ran 100 to 500 times faster than before.
+(0.2.0) A range followed by an exact word, an exact reverse complement,
+a reverse complement with mismatches only (`~p1[1,0,0]`) or an exact
+repeat, for example `p1=8...12 50...30000 ~p1`, is much faster: only the
+gap lengths where the next unit can match are tried (same order, same
+output).  For long gaps a 5-mer position index of the record is used; it
+takes about 4 bytes per base (a 74 Mb chromosome: about 300 MB).  A range
+followed by anything else (an inexact word, a weight matrix, another
+range) is searched as before.
 
-(After 0.1.0) With `-t N`, a long record (2 Mb or more) is cut into
-pieces of 1 Mb of start positions, and the threads search the pieces at
-the same time; the hits are joined in order, so the output is the same.
-B. napus chromosome A1 (31 Mb) with `-t 8`: 3 to 4 times faster than
-one thread.  More is not possible on that machine (Apple M4: 4 fast and
-6 slow cores; the search is limited by memory speed).  Each thread keeps
-a copy of the record (about 2 bytes per base); the 5-mer index of a
-record is shared by all threads.  Whole B. napus genome, `-t 8 -c`:
-at most 4.3 GB of memory.
+(0.2.0) With `-t N`, records are searched at the same time, and a long
+record (2 Mb or more) is cut into pieces of 1 Mb of start positions that
+the threads share; the output is the same as with one thread.  Each
+thread keeps a copy of the record it searches (about 2 bytes per base);
+the index of a record is shared.
+
+22 TIR patterns of B. napus (`tir_scan_patterns`, for example
+`p1=8...8 p2=5...7 50...30000 ~p2 p1`), Apple M4, same hits for all
+versions; times are the sum over the 22 patterns:
+
+| input | C (original) | 0.1.0 | 0.2.0 |
+|---|---|---|---|
+| chromosome A1, 1 Mb, 22 patterns, 1 thread | 3162 s | 3963 s | 3.2 s |
+| chromosome A1, 31 Mb, 22 patterns, 1 thread | – | – | 107 s |
+| genome, 1.0 Gb, 22 patterns, `-t 8` | – | – | 9.6 min (max 5.6 GB) |
+
+Threads, whole genome, one pattern (02_DTA_short5to7, 81 514 hits):
+
+| `-t` | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| seconds | 349 | 184 | 125 | 110 |
+| max memory | 0.6 GB | 1.3 GB | 1.7 GB | 4.2 GB |
+
+The M4 has 4 fast and 6 slow cores, and the search is limited by memory
+speed, so more than 4 threads gains little on this machine.
 
 ## Layout
 

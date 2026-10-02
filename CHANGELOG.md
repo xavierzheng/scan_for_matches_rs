@@ -1,61 +1,57 @@
 # Changelog
 
-## Unreleased (0.2.0)
+## 0.2.0 — 2026-10-03
 
-- Faster gap skipping: the units after the one that follows a range
-  (exact words, exact `~pN`, `pN` of names matched before the range) are
-  checked together with it, 8 bases at a time; a reverse complement with
-  mismatches only (`~pN[m,0,0]`) is skipped too.  The 22 TIR patterns on
-  B. napus chromosome A1, one thread each: 402 to 107 CPU-s in total
-  (02_DTA_short5to7 149 s to 18 s, 09_DTC_CACTA_relaxed1 21 s to 0.5 s),
-  output identical.  Also fixes a slow case of the step above (a short
-  window before a long reverse complement: 10 times slower than without
-  skipping).
+Faster.  For all input that 0.1.0 reads, the output is byte-identical
+to 0.1.0 with any number of threads; only the time changes.  22 TIR patterns of B. napus,
+one thread: on 1 Mb of chromosome A1, 3963 s with 0.1.0 (C: 3162 s) and
+3.2 s with 0.2.0, the same hits.  The whole genome (1.0 Gb, 22 patterns,
+`-t 8`): 9.6 min, at most 5.6 GB of memory (0.1.0: estimated 44 CPU-days).
 
-- `-t N` also splits a long record (2 Mb or more) into pieces of 1 Mb of
-  start positions that are searched by several threads.  The pieces are
-  joined in order with the one-thread rule (the next hit starts at or
-  after the end of the last one), so the output is identical.  Not used
-  for patterns that use matches of earlier sequences, that start with an
-  alternative `( | )`, or that contain `^`.  B. napus chromosome A1
-  (31 Mb), `-t 8`: 02_DTA_short5to7 128 s to 42 s, 04_DTE_seed20 26 s to
-  6 s (`-c`: 51 s to 11 s).  On the whole genome (many records) slow
-  patterns do not change (04_DTE_seed20 `-c`: 487 s, 479 s) and fast
-  patterns are slower, because each thread loads each long record
-  (00_DTC_published_2025 `-c`: 5.8 s to 9.3 s).  Each thread keeps a
-  copy of the record it searches (about 2 bytes per base); the 5-mer
-  index is shared.
-
-- Reverse complement and the coding of the sequence use lookup tables
-  (faster loading of long records).
-
+### Speed
 - Gap lengths that cannot lead to a hit are skipped.  When a range
   (`a...b`) is followed by an exact word, an exact reverse complement
-  (`~pN`) or an exact repeat (`pN`), only the lengths where that unit can
-  match are tried, in the same order as before, so the output does not
-  change.  Long gaps use a 5-mer position index of each record (about
-  4 bytes per base, built once per record and strand).  Used for DNA
-  patterns that do not use matches of earlier sequences.  The 22 TIR
-  patterns on 1 Mb of B. napus chromosome A1: 100 to 500 times faster
-  (for example 747 s to 5.5 s), output identical.
+  (`~pN`), a reverse complement with mismatches only (`~pN[m,0,0]`) or an
+  exact repeat (`pN`), only the lengths where that unit can match are
+  tried, in the same order as before.  The fixed units after it (words,
+  exact `~pN`, `pN` of names matched before the range) are checked at
+  the same time, 8 bases at a time.  Long gaps use a 5-mer position index
+  of each record (about 4 bytes per base, built once per record and
+  strand).  Used for DNA patterns that do not use matches of earlier
+  sequences.
+- Reverse complement and the coding of the sequence use lookup tables.
 
-- `-t N`: records are searched by N threads; output is written in input
+### Threads (`-t N`, new option)
+- Records are searched by N threads; the output is written in input
   order and is identical to one thread, including `-m`, `-n`, `-i` and
-  read errors.  Patterns that use matches of earlier sequences run on one
-  thread.  B. napus CDS (120 351 records): 42.8 s with 1 thread, 9.2 s
-  with 8.
+  read errors.  B. napus CDS (120 351 records): 42.8 s with 1 thread,
+  9.2 s with 8 (before the gap skipping).
+- A long record (2 Mb or more) is cut into pieces of 1 Mb of start
+  positions that several threads search; the pieces are joined in order
+  with the one-thread rule (the next hit starts at or after the end of
+  the last one).  Not used for patterns that use matches of earlier
+  sequences, that start with an alternative `( | )`, or that contain `^`.
+  Each thread keeps a copy of the record it searches (about 2 bytes per
+  base); the 5-mer index is shared.  Whole genome, 02_DTA_short5to7:
+  349 s with 1 thread, 184 s with 2, 125 s with 4, 110 s with 8 (Apple
+  M4, 4 fast and 6 slow cores; the search is limited by memory speed).
+- Patterns that read a name before it is certainly matched (it is
+  defined later, or only in one branch of an alternative) depend on
+  earlier sequences; they are detected and searched on one thread.  The
+  engine has no global state any more.
 
-- The matching engine has no global state any more: several engines can
-  run at the same time in different threads.  Patterns that read a name
-  before it is certainly matched (it is defined later, or only in one
-  branch of an alternative) are detected; they depend on earlier
-  sequences and will be searched on one thread.
-
+### Input
 - FASTA input compressed with gzip or bgzip is read directly (detected by
   its first bytes; uses the system zlib library).  Damaged or truncated
-  input stops with "gzip input: ..." and exit status 1.  The output
-  before such an error is always the same (it did depend on how the
-  input arrived through a pipe).
+  input stops with "gzip input: ..." and exit status 1; the output before
+  the error does not depend on how the input arrives through a pipe.
+
+### Checks
+- `cargo test`; random patterns and sequences compared with the C program
+  (`fuzz_compare.py --compat`, 28 000 cases in this version), with a build
+  without gap skipping (`fuzz_skip.py`, also `--chain`, 8 100 cases), and
+  between thread counts and piece sizes (`fuzz_threads.py`, 8 000 cases):
+  no difference.
 
 ## 0.1.0 — 2026-10-01
 
