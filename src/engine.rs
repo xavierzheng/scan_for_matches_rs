@@ -752,7 +752,22 @@ fn parse_bonds(l: &[u8], p: usize, rs: &mut [u8; 16]) -> Option<usize> {
 }
 
 /// C `compl()` from scan_for_matches.c (note: 's' maps to 'S').
+#[inline(always)]
 pub fn compl(c: u8) -> u8 {
+    COMPL[c as usize]
+}
+
+static COMPL: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut i = 0;
+    while i < 256 {
+        t[i] = compl_slow(i as u8);
+        i += 1;
+    }
+    t
+};
+
+const fn compl_slow(c: u8) -> u8 {
     match c {
         b'a' => b't',
         b'A' => b'T',
@@ -1040,17 +1055,14 @@ impl Engine {
     /// comp_data(data, cdata): translate characters to codes, stop at NUL.
     pub fn comp_data(&mut self, data: &Buf) {
         self.cd_gen += 1;
-        let mut k = 0usize;
-        loop {
-            let c = data.v[k];
-            if c == 0 {
-                break;
-            }
-            let code = self.p2c(c);
-            unsafe { *self.mem.cd.add(k) = code };
-            k += 1;
+        let n = data.v.iter().position(|&c| c == 0).expect("NUL at the end");
+        let cd = unsafe { std::slice::from_raw_parts_mut(self.mem.cd, n + 1) };
+        let mut t = [0u8; 256];
+        t[..128].copy_from_slice(&self.p2c_lo);
+        for (d, &c) in cd[..n].iter_mut().zip(&data.v[..n]) {
+            *d = t[c as usize];
         }
-        unsafe { *self.mem.cd.add(k) = 0 };
+        cd[n] = 0;
     }
 
     /// strcpy(cdata, data)

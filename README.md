@@ -45,7 +45,7 @@ scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] [-t N] patter
 | `-m N` | report at most N hits |
 | `-o N` | show overlapping hits (the value is not used) |
 | `-i file` | file of sequence ids to skip |
-| `-t N` | search N records at the same time (threads); default 1.  The output is the same as with one thread |
+| `-t N` | use N threads: several records at the same time, and long records in pieces; default 1.  The output is the same as with one thread |
 
 The FASTA input on stdin can be plain text or compressed with gzip or
 bgzip (for example NCBI `*.fna.gz` files); compression is detected
@@ -162,6 +162,16 @@ tried (same order, same output).  For long gaps a 5-mer position index
 of the record is used; it takes about 4 bytes per base for each thread
 (a 74 Mb chromosome: about 300 MB per thread).  On 1 Mb of B. napus,
 22 TIR patterns ran 100 to 500 times faster than before.
+
+(After 0.1.0) With `-t N`, a long record (2 Mb or more) is cut into
+pieces of 1 Mb of start positions, and the threads search the pieces at
+the same time; the hits are joined in order, so the output is the same.
+B. napus chromosome A1 (31 Mb) with `-t 8`: 3 to 4 times faster than
+one thread.  More is not possible on that machine (Apple M4: 4 fast and
+6 slow cores; the search is limited by memory speed).  Each thread keeps
+a copy of the record (about 2 bytes per base); the 5-mer index of a
+record is shared by all threads.  Whole B. napus genome, `-t 8 -c`:
+at most 4.3 GB of memory.
 
 ## Layout
 

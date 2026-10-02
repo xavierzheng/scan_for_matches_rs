@@ -2,6 +2,23 @@
 
 ## Unreleased (0.2.0)
 
+- `-t N` also splits a long record (2 Mb or more) into pieces of 1 Mb of
+  start positions that are searched by several threads.  The pieces are
+  joined in order with the one-thread rule (the next hit starts at or
+  after the end of the last one), so the output is identical.  Not used
+  for patterns that use matches of earlier sequences, that start with an
+  alternative `( | )`, or that contain `^`.  B. napus chromosome A1
+  (31 Mb), `-t 8`: 02_DTA_short5to7 128 s to 42 s, 04_DTE_seed20 26 s to
+  6 s (`-c`: 51 s to 11 s).  On the whole genome (many records) slow
+  patterns do not change (04_DTE_seed20 `-c`: 487 s, 479 s) and fast
+  patterns are slower, because each thread loads each long record
+  (00_DTC_published_2025 `-c`: 5.8 s to 9.3 s).  Each thread keeps a
+  copy of the record it searches (about 2 bytes per base); the 5-mer
+  index is shared.
+
+- Reverse complement and the coding of the sequence use lookup tables
+  (faster loading of long records).
+
 - Gap lengths that cannot lead to a hit are skipped.  When a range
   (`a...b`) is followed by an exact word, an exact reverse complement
   (`~pN`) or an exact repeat (`pN`), only the lengths where that unit can

@@ -322,18 +322,10 @@ struct Opts {
 
 /// Turn the record in `data` (length `ln`) into its reverse complement.
 fn reverse_complement(data: &mut Buf, ln: usize) {
-    if ln > 0 {
-        let (mut a, mut b) = (0usize, ln - 1);
-        while a <= b {
-            let tmp = compl(data.v[a]);
-            data.v[a] = compl(data.v[b]);
-            data.v[b] = tmp;
-            a += 1;
-            if b == 0 {
-                break;
-            }
-            b -= 1;
-        }
+    let s = &mut data.v[..ln];
+    s.reverse();
+    for c in s {
+        *c = compl(*c);
     }
 }
 
