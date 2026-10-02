@@ -352,7 +352,15 @@ fn print_hit<S: Sink>(
 ) {
     let cb = eng.cdata_base();
     if !rev {
-        pr.hit(id, 1 + hits[0] - cb, 1 + (hits[n] - 1 - cb), hits, n, data, cb);
+        pr.hit(
+            id,
+            1 + hits[0] - cb,
+            1 + (hits[n] - 1 - cb),
+            hits,
+            n,
+            data,
+            cb,
+        );
     } else {
         let l = ln as i64;
         pr.hit(
@@ -564,7 +572,8 @@ impl PieceEngine {
         if rev {
             reverse_complement(&mut self.data, rec.ln);
         }
-        self.eng.set_shared_index(Some(rec.index[rev as usize].clone()));
+        self.eng
+            .set_shared_index(Some(rec.index[rev as usize].clone()));
         self.eng.comp_data(&self.data);
         self.loaded = Some(key);
     }
@@ -596,7 +605,9 @@ impl PieceEngine {
         );
         while i > 0 {
             let n = i as usize;
-            print_hit(&mut pr, &self.eng, &rec.id, job.rev, rec.ln, &self.hits, n, &self.data);
+            print_hit(
+                &mut pr, &self.eng, &rec.id, job.rev, rec.ln, &self.hits, n, &self.data,
+            );
             starts.push(self.hits[0] - cb);
             pasts.push(self.hits[n] - cb);
             i = if all {
@@ -802,9 +813,8 @@ fn run_threads(
                         e.parse_cmd(&line, seq_type);
                         PieceEngine::new(e)
                     });
-                    rec_hit |= join_piece(
-                        &mut out, &job, &ph, we, &mut wpr, &mut past, &mut max_hits,
-                    );
+                    rec_hit |=
+                        join_piece(&mut out, &job, &ph, we, &mut wpr, &mut past, &mut max_hits);
                 }
                 if job.end_of_record && !rec_hit && max_hits > 0 {
                     missed(&mut stop_after);
@@ -875,7 +885,8 @@ fn join_piece(
         let i = if !again {
             again = true;
             we.load(&job.rec, job.rev);
-            we.eng.first_match_in(job.rec.ln as i32, *past, last, &mut we.hits)
+            we.eng
+                .first_match_in(job.rec.ln as i32, *past, last, &mut we.hits)
         } else {
             we.eng.cont_match(&mut we.hits)
         };
@@ -886,7 +897,16 @@ fn join_piece(
         let cb = we.eng.cdata_base();
         wpr.out.buf.clear();
         wpr.out.ends.clear();
-        print_hit(wpr, &we.eng, &job.rec.id, job.rev, job.rec.ln, &we.hits, n, &we.data);
+        print_hit(
+            wpr,
+            &we.eng,
+            &job.rec.id,
+            job.rev,
+            job.rec.ln,
+            &we.hits,
+            n,
+            &we.data,
+        );
         out.write(&wpr.out.buf);
         *max_hits -= 1;
         printed = true;

@@ -1752,12 +1752,11 @@ impl Engine {
         while pu != 0 {
             match self.r32(pu + O_TYPE) {
                 MATCH_START => return true,
-                OR_PUNIT => {
+                OR_PUNIT
                     if self.has_match_start(self.r64(pu + O_U0), depth + 1)
-                        || self.has_match_start(self.r64(pu + O_U8), depth + 1)
-                    {
-                        return true;
-                    }
+                        || self.has_match_start(self.r64(pu + O_U8), depth + 1) =>
+                {
+                    return true;
                 }
                 _ => {}
             }

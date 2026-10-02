@@ -169,13 +169,21 @@ fn long_records_in_pieces() {
         "p1=5...5 3...600 ~p1",
     ];
     for p in patterns {
-        for args in [&[][..], &["-c"][..], &["-o", "1"][..], &["-c", "-m", "40"][..]] {
+        for args in [
+            &[][..],
+            &["-c"][..],
+            &["-o", "1"][..],
+            &["-c", "-m", "40"][..],
+        ] {
             let one = scan(args, p, &input, &[]);
             for (t, piece) in [("2", 1), ("4", 3), ("8", 17), ("3", 400)] {
                 let mut a = vec!["-t", t];
                 a.extend_from_slice(args);
                 let many = scan_env(&a, p, &input, &[], Some(piece));
-                assert!(one == many, "-t {t}, pieces of {piece}, {args:?} {p}: output differs");
+                assert!(
+                    one == many,
+                    "-t {t}, pieces of {piece}, {args:?} {p}: output differs"
+                );
             }
         }
     }
