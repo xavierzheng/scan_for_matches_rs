@@ -1,5 +1,7 @@
 # scan_for_matches (Rust port)
 
+[![CI](https://github.com/xavierzheng/scan_for_matches_rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/xavierzheng/scan_for_matches_rs/actions/workflows/ci.yml)
+
 A Rust port of **scan_for_matches** by Ross Overbeek (Argonne National
 Laboratory): scan nucleotide or protein sequences in FASTA format for
 patterns (ranges, hairpins/reverse complements with pairing rules, repeats,
