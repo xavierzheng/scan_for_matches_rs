@@ -19,6 +19,17 @@ fn gzip(data: &[u8]) -> Vec<u8> {
 }
 
 fn scan(args: &[&str], pattern: &str, input: &[u8]) -> (Option<i32>, Vec<u8>, String) {
+    scan_in_pieces(args, pattern, input, 0)
+}
+
+/// As `scan`, but the input is written in pieces of `piece` bytes with a
+/// short pause after each (0: all at once).
+fn scan_in_pieces(
+    args: &[&str],
+    pattern: &str,
+    input: &[u8],
+    piece: usize,
+) -> (Option<i32>, Vec<u8>, String) {
     let dir = std::env::temp_dir().join(format!(
         "sfm_gz_{}_{:?}",
         std::process::id(),
@@ -38,7 +49,16 @@ fn scan(args: &[&str], pattern: &str, input: &[u8]) -> (Option<i32>, Vec<u8>, St
     let mut stdin = child.stdin.take().unwrap();
     let input = input.to_vec();
     let feeder = std::thread::spawn(move || {
-        let _ = stdin.write_all(&input);
+        if piece == 0 {
+            let _ = stdin.write_all(&input);
+            return;
+        }
+        for p in input.chunks(piece) {
+            if stdin.write_all(p).and_then(|_| stdin.flush()).is_err() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
     });
     let out = child.wait_with_output().unwrap();
     feeder.join().unwrap();
@@ -112,4 +132,25 @@ fn damaged_gzip_is_an_error() {
     let (code, _, err) = scan(&[], PAT, &gz);
     assert_eq!(code, Some(1));
     assert_eq!(err, "gzip input: damaged compressed data\n");
+}
+
+#[test]
+fn damaged_gzip_gives_the_same_output_however_it_arrives() {
+    // the output before the error must not depend on the sizes of the
+    // reads from the pipe
+    let mut gz = gzip(&fasta());
+    let n = gz.len();
+    for b in &mut gz[n / 2..n / 2 + 50] {
+        *b = 0x55;
+    }
+    let whole = scan(&["-c"], PAT, &gz);
+    assert_eq!(whole.0, Some(1));
+    assert!(!whole.1.is_empty(), "hits before the damage are printed");
+    for piece in [1000, 4093] {
+        assert_eq!(
+            whole,
+            scan_in_pieces(&["-c"], PAT, &gz, piece),
+            "pieces of {piece}"
+        );
+    }
 }

@@ -105,25 +105,27 @@ impl<R: Read> GzReader<R> {
         })
     }
 
+    /// Refill the input buffer completely (or up to the end of the input):
+    /// zlib then always gets the same pieces, whatever sizes the reads of
+    /// a pipe return, so damaged input gives the same output every time.
     fn fill(&mut self) -> io::Result<()> {
         if self.in_pos < self.in_len || self.in_eof {
             return Ok(());
         }
-        loop {
-            match self.inner.read(&mut self.inbuf) {
+        self.in_pos = 0;
+        self.in_len = 0;
+        while self.in_len < self.inbuf.len() {
+            match self.inner.read(&mut self.inbuf[self.in_len..]) {
                 Ok(0) => {
                     self.in_eof = true;
-                    return Ok(());
+                    break;
                 }
-                Ok(n) => {
-                    self.in_pos = 0;
-                    self.in_len = n;
-                    return Ok(());
-                }
+                Ok(n) => self.in_len += n,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
             }
         }
+        Ok(())
     }
 }
 

@@ -26,7 +26,9 @@
 
 - FASTA input compressed with gzip or bgzip is read directly (detected by
   its first bytes; uses the system zlib library).  Damaged or truncated
-  input stops with "gzip input: ..." and exit status 1.
+  input stops with "gzip input: ..." and exit status 1.  The output
+  before such an error is always the same (it did depend on how the
+  input arrived through a pipe).
 
 ## 0.1.0 — 2026-10-01
 
