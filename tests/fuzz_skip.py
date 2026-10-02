@@ -95,7 +95,8 @@ def chain_pattern(r):
         k = r.random()
         pool = names + chain_names + ([rname] if rname and r.random() < 0.3 else [])
         if k < 0.35:
-            units.append("~p%d" % r.choice(pool))
+            errs = r.choice(["", "", "[1,0,0]", "[2,0,0]", "[3,0,0]", "[0,1,0]", "[1,0,1]"])
+            units.append("~p%d%s" % (r.choice(pool), errs))
         elif k < 0.6:
             units.append("p%d" % r.choice(pool))
         elif k < 0.85:
@@ -137,7 +138,10 @@ def sequence(r, n):
         tir = "".join(r.choice("acgt") for _ in range(r.randint(1, 10)))
         mid = "".join(r.choice("acgt") for _ in range(r.randint(0, 400)))
         i = r.randint(0, max(0, len(s) - 1))
-        s[i:i] = list(tsd + tir + mid + rc(tir) + tsd)
+        end = list(rc(tir))
+        for _ in range(r.choice([0, 0, 1, 2])):
+            end[r.randrange(len(end))] = r.choice("acgtn")
+        s[i:i] = list(tsd + tir + mid + "".join(end) + tsd)
     if r.random() < 0.2:
         for _ in range(r.randint(1, 10)):
             s[r.randrange(len(s))] = r.choice("nNryRY")

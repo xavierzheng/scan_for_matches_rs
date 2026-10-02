@@ -858,6 +858,13 @@ pub struct Engine {
     /// `masks[k..k + 8]` packed in one word, as (k, word), when the masks
     /// checked are all plain bases; empty: check byte by byte.
     mask_words: Vec<(usize, u64)>,
+    /// `masks[..mask_tol]` (a reverse complement with mismatches only)
+    /// may have `mask_mis` mismatches; the other masks must match
+    mask_tol: usize,
+    mask_mis: i32,
+    /// masks checked one by one in `masks_match_at` (the ones not covered
+    /// by the index key, the tolerant part or `mask_words`)
+    mask_bytes: [(usize, usize); 2],
     /// (range, units after its skip target that `next_start` checks too)
     skip_chains: Vec<(i64, Vec<i64>)>,
     /// punit_to_code for indexes 0..127 (never overwritten)
@@ -910,6 +917,9 @@ impl Engine {
             start_lim: i64::MAX,
             masks: Vec::new(),
             mask_words: Vec::new(),
+            mask_tol: 0,
+            mask_mis: 0,
+            mask_bytes: [(0, 0); 2],
             skip_chains: Vec::new(),
             p2c_lo: [0; 128],
         };
@@ -1805,7 +1815,7 @@ impl Engine {
             match self.r32(pu + O_TYPE) {
                 RANGE_PUNIT => {
                     let n = Self::next_punit::<Checked>(m, pu);
-                    let target = if on && n != 0 && self.skippable(n, pu) {
+                    let target = if on && n != 0 && self.skippable(n, pu, true) {
                         n
                     } else {
                         0
@@ -1840,7 +1850,7 @@ impl Engine {
         let mut u = n;
         while chain.len() < 16 {
             u = Self::next_punit::<Checked>(self.mem, u);
-            if u == 0 || !self.skippable(u, range) {
+            if u == 0 || !self.skippable(u, range, false) {
                 break;
             }
             let t = self.r32(u + O_TYPE);
@@ -1858,7 +1868,9 @@ impl Engine {
     /// Can lengths of the range `range` be skipped when `n` follows it?
     /// `n` must check a fixed string: not one taken from the range itself
     /// (its text changes with the gap length).
-    fn skippable(&self, n: i64, range: i64) -> bool {
+    /// With `mismatches`, also a reverse complement with mismatches only
+    /// (`~pN[m,0,0]`): it has a fixed length and no other choice to try.
+    fn skippable(&self, n: i64, range: i64, mismatches: bool) -> bool {
         if self.r32(n + O_ANCH) == 0 {
             return false;
         }
@@ -1871,7 +1883,11 @@ impl Engine {
         };
         match self.r32(n + O_TYPE) {
             EXACT_PUNIT => self.r32(n + O_U0) >= 1,
-            COMPL_PUNIT => self.r32(n + O_U16) == -1 && no_errors(n),
+            COMPL_PUNIT => {
+                self.r32(n + O_U16) == -1
+                    && (no_errors(n)
+                        || (mismatches && self.r32(n + O_U0) == 0 && self.r32(n + O_U4) == 0))
+            }
             REPEAT_PUNIT => no_errors(n),
             _ => false,
         }
@@ -1887,6 +1903,12 @@ impl Engine {
         let mut masks = std::mem::take(&mut self.masks);
         masks.clear();
         let r = self.push_unit_masks(n, &mut masks, max);
+        self.mask_mis = 0;
+        self.mask_tol = 0;
+        if self.r32(n + O_TYPE) == COMPL_PUNIT && self.r32(n + O_U8) != 0 {
+            self.mask_mis = self.r32(n + O_U8);
+            self.mask_tol = masks.len();
+        }
         if r == Some(Some(())) {
             let chains = std::mem::take(&mut self.skip_chains);
             if let Some((_, chain)) = chains.iter().find(|c| c.0 == range) {
@@ -1949,45 +1971,77 @@ impl Engine {
         }
     }
 
-    /// Does the data at `x` match the masks from `masks[from]` on (and end
-    /// by `er`)?  Uses `mask_words` (set by `set_mask_words(from)`) when it
-    /// is not empty.
+    /// Does the data at `x` match the masks (and end by `er`)?  The masks
+    /// of the index key are not checked again: `mask_words` and
+    /// `mask_bytes` (set by `set_checks`) cover the others that must
+    /// match exactly, then the tolerant part is checked.
     #[inline(always)]
-    fn masks_match_at(&self, x: i64, er: i64, from: usize) -> bool {
+    fn masks_match_at(&self, x: i64, er: i64) -> bool {
         let n = self.masks.len() as i64;
         if x + n - 1 > er {
             return false;
         }
-        if !self.mask_words.is_empty() {
-            // a plain base mask matches only the same code; x..=x+n-1 lies
-            // in the coded sequence
-            return self.mask_words.iter().all(|&(k, w)| {
-                let d = unsafe { ((x as usize + k) as *const u64).read_unaligned() };
-                d & 0x0f0f_0f0f_0f0f_0f0f == w
-            });
+        // a plain base mask matches only the same code; x..=x+n-1 lies in
+        // the coded sequence
+        let words = self.mask_words.iter().all(|&(k, w)| {
+            let d = unsafe { ((x as usize + k) as *const u64).read_unaligned() };
+            d & 0x0f0f_0f0f_0f0f_0f0f == w
+        });
+        if !words {
+            return false;
         }
         let m = self.mem;
-        self.masks[from..].iter().enumerate().all(|(k, &mk)| {
-            let d = m.rb(x + (from + k) as i64) & 15;
-            KNOWN_CHAR[d as usize] != 0 && (d & mk) == d
-        })
+        for &(a, b) in &self.mask_bytes {
+            let ok = self.masks[a..b].iter().enumerate().all(|(k, &mk)| {
+                let d = m.rb(x + (a + k) as i64) & 15;
+                KNOWN_CHAR[d as usize] != 0 && (d & mk) == d
+            });
+            if !ok {
+                return false;
+            }
+        }
+        if self.mask_tol > 0 {
+            // as loose_match without inserts and deletes: every base known,
+            // at most mask_mis of them not in their mask
+            let mut left = self.mask_mis;
+            for (k, &mk) in self.masks[..self.mask_tol].iter().enumerate() {
+                let d = m.rb(x + k as i64) & 15;
+                if KNOWN_CHAR[d as usize] == 0 {
+                    return false;
+                }
+                if (d & mk) != d {
+                    left -= 1;
+                    if left < 0 {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
-    /// Pack `masks[from..]` in words for `masks_match_at`, when they are
-    /// all plain bases and at least 8; the last word ends at the last mask.
-    fn set_mask_words(&mut self, from: usize) {
+    /// Set how `masks_match_at` checks `masks[from..]`, except the index
+    /// key `masks[key..key + KIDX_K]` (`key` is at least `from`): the part
+    /// after the key in words when it is at least 8 plain bases.
+    fn set_checks(&mut self, from: usize, key: Option<usize>) {
         self.mask_words.clear();
         let len = self.masks.len();
-        if len < from + 8 || self.masks[from..].iter().any(|&mk| base2(mk).is_none()) {
+        let (a, b) = match key {
+            Some(k) => ((from, k), (k + KIDX_K, len)),
+            None => ((from, from), (from, len)),
+        };
+        self.mask_bytes = [a, (0, 0)];
+        if b.1 < b.0 + 8 || self.masks[b.0..b.1].iter().any(|&mk| base2(mk).is_none()) {
+            self.mask_bytes[1] = b;
             return;
         }
         let word = |k: usize| u64::from_le_bytes(self.masks[k..k + 8].try_into().unwrap());
-        let mut k = from;
-        while k + 8 < len {
+        let mut k = b.0;
+        while k + 8 < b.1 {
             self.mask_words.push((k, word(k)));
             k += 8;
         }
-        self.mask_words.push((len - 8, word(len - 8)));
+        self.mask_words.push((b.1 - 8, word(b.1 - 8)));
     }
 
     /// The first position in `xlo..=xhi` where the unit `n` (marked by
@@ -2022,25 +2076,26 @@ impl Engine {
             Some(Some(())) => {}
         }
         let len = self.masks.len();
-        let key = if len >= KIDX_K && xhi - xlo >= SCAN_LIMIT {
-            let mut key = 0u32;
-            let mut ok = true;
-            for &mk in &self.masks[..KIDX_K] {
-                match base2(mk) {
-                    Some(b) => key = key << 2 | b,
-                    None => ok = false,
-                }
-            }
-            if ok { Some(key) } else { None }
+        let tol = self.mask_tol;
+        // the index key: the first KIDX_K plain bases that must match
+        let key_at = if xhi - xlo >= SCAN_LIMIT && len >= tol + KIDX_K {
+            (tol..=len - KIDX_K).find(|&k| {
+                self.masks[k..k + KIDX_K]
+                    .iter()
+                    .all(|&mk| base2(mk).is_some())
+            })
         } else {
             None
         };
-        let Some(key) = key else {
-            self.set_mask_words(0);
-            return (xlo..=xhi).find(|&x| self.masks_match_at(x, er, 0));
+        let Some(ko) = key_at else {
+            self.set_checks(tol, None);
+            return (xlo..=xhi).find(|&x| self.masks_match_at(x, er));
         };
-        // the index holds the positions where masks[..KIDX_K] match
-        self.set_mask_words(KIDX_K);
+        let key = self.masks[ko..ko + KIDX_K]
+            .iter()
+            .fold(0u32, |key, &mk| key << 2 | base2(mk).unwrap());
+        // the index holds the positions where the key matches
+        self.set_checks(tol, Some(ko));
         let base = self.mem.cd as i64;
         if self.shared_kidx.is_none() {
             self.build_kidx(er);
@@ -2055,14 +2110,15 @@ impl Engine {
         };
         let list =
             &idx.pos[idx.starts[key as usize] as usize..idx.starts[key as usize + 1] as usize];
-        let lo = (xlo - base) as u32;
+        // the key of a start x is at x + ko
+        let lo = (xlo - base + ko as i64) as u32;
         let first = list.partition_point(|&p| p < lo);
         for &p in &list[first..] {
-            let x = base + p as i64;
+            let x = base + p as i64 - ko as i64;
             if x > xhi {
                 break;
             }
-            if self.masks_match_at(x, er, KIDX_K) {
+            if self.masks_match_at(x, er) {
                 return Some(x);
             }
         }
