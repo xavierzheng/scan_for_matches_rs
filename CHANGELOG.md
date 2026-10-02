@@ -2,6 +2,16 @@
 
 ## Unreleased (0.2.0)
 
+- Gap lengths that cannot lead to a hit are skipped.  When a range
+  (`a...b`) is followed by an exact word, an exact reverse complement
+  (`~pN`) or an exact repeat (`pN`), only the lengths where that unit can
+  match are tried, in the same order as before, so the output does not
+  change.  Long gaps use a 5-mer position index of each record (about
+  4 bytes per base, built once per record and strand).  Used for DNA
+  patterns that do not use matches of earlier sequences.  The 22 TIR
+  patterns on 1 Mb of B. napus chromosome A1: 100 to 500 times faster
+  (for example 747 s to 5.5 s), output identical.
+
 - `-t N`: records are searched by N threads; output is written in input
   order and is identical to one thread, including `-m`, `-n`, `-i` and
   read errors.  Patterns that use matches of earlier sequences run on one

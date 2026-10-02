@@ -283,7 +283,7 @@ def main():
     stats = {}
     bad = []
     hits = 0
-    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count())) as ex:
+    with ThreadPoolExecutor(max_workers=min(int(os.environ.get("FUZZ_WORKERS", 8)), 8, os.cpu_count())) as ex:
         for res in ex.map(one, range(N)):
             stats[res[1]] = stats.get(res[1], 0) + 1
             if res[1] == "ok" and res[5][1]:

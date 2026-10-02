@@ -96,7 +96,9 @@ Only these (details in `CHANGELOG.md`):
 * (after 0.1.0) `-t N` searches records in parallel.  A pattern that reads
   a name before it is certainly matched (defined later, or only in one
   branch of `( | )`) uses matches of earlier sequences, so it is always
-  searched on one thread.
+  searched on one thread;
+* (after 0.1.0) gap lengths that cannot lead to a hit are skipped (see
+  Speed); the output does not change.
 
 Unchanged on purpose (see `TODO.md`, group C): a pattern whose longest
 match is 0 characters is a pattern error, the value of `-o` is not used, a
@@ -122,6 +124,9 @@ cargo test --release
   (options, hit and miss limits, ignore list, damaged input, patterns
   that use earlier sequences); `tests/fuzz_threads.py` does the same with
   random patterns and input.
+* `tests/fuzz_skip.py OLD NEW N SEED` – compares a build without gap
+  skipping (for example 0.1.0) with a new one on random patterns with
+  wide ranges followed by words, reverse complements and repeats.
 * unit test in `src/engine.rs` – the inexact matcher against a separate
   recursive implementation of its search order (200 000 random cases).
 
@@ -147,6 +152,14 @@ Typical patterns run at about the speed of the C program (from 0.8× to
 1.3× of its time, depending on the pattern).  Inexact matches with
 mismatches, inserts and deletes together can take longer than in the
 original, because the choices it skipped are now tried.
+
+(After 0.1.0) A range followed by an exact word, an exact reverse
+complement or an exact repeat, for example `p1=8...12 50...30000 ~p1`,
+is much faster: only the gap lengths where the next unit can match are
+tried (same order, same output).  For long gaps a 5-mer position index
+of the record is used; it takes about 4 bytes per base for each thread
+(a 74 Mb chromosome: about 300 MB per thread).  On 1 Mb of B. napus,
+22 TIR patterns ran 100 to 500 times faster than before.
 
 ## Layout
 

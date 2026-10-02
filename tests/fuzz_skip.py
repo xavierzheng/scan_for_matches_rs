@@ -124,6 +124,8 @@ def one(case):
     args = (["-c"] if r.random() < 0.4 else []) + (["-o", "1"] if r.random() < 0.3 else [])
     a = run(OLD, args, pat, recs.encode())
     b = run(NEW, args, pat, recs.encode())
+    if b is None and a is not None and a != "big":
+        return ("NEW-timeout", (pat, args, len(recs)))
     if a is None or b is None:
         return ("timeout", None)
     if a == "big" or b == "big":
@@ -140,6 +142,6 @@ for k, _ in res:
     stats[k] = stats.get(k, 0) + 1
 print("results:", stats)
 for k, info in res:
-    if k == "DIFF":
+    if k in ("DIFF", "NEW-timeout"):
         print(info)
-sys.exit(1 if stats.get("DIFF") else 0)
+sys.exit(1 if stats.get("DIFF") or stats.get("NEW-timeout") else 0)
