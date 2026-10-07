@@ -1,39 +1,13 @@
 # TODO
 
-## 0.3.0: output formats (next; local plan `docs/PLAN-0.3.0.md`)
-
-Default output stays byte-identical to 0.2.0; new formats only with the
-new options, identical for every `-t N`.
-
-- [ ] Map each pattern unit to its source line, and each hit entry to
-      its unit (alternatives `( | )` and zero-width units make this
-      non-trivial).
-- [ ] `--format jsonl`: one object per hit with each unit's coordinates
-      (1-based, closed, start <= end on both strands) and text.
-- [ ] Labels in `%` comments (old programs ignore them):
-      `%@element TYPE key=value ...` for the element, `%@ TYPE ...` at
-      the end of a line for one feature made of the units on that line.
-- [ ] `--format gff3`: column 3 = the label type (free text);
-      column 9 = `ID`, `Parent`, `Name`, `Classification` (from the
-      label, for example `TIR/DTC`), `Method` (default `structural`);
-      `Sequence_ontology` only when given or when the type is a known SO
-      name (optional: many patterns have no SO term).  Every hit gets a
-      unique Name, prefix + counter without fixed width (`DTC1`,
-      `DTC123456`), shared by all lines of that hit.  Options
-      `--name-prefix`, `--name-start`, `--type`.
-- [ ] `--format bed6` / `bed12`.
-- [ ] `--dedup`: drop the reverse-strand copy of an element that the
-      forward scan already reported (patterns that read the same on both
-      strands, such as TIR patterns, report each element twice with
-      `-c`); rule still to be decided with the user.
-- [ ] Tests for every format (golden files, coordinates read back from
-      the FASTA give the printed text, identity across `-t` and piece
-      sizes); labelled copies of the TIR patterns; README; release.
-
 ## Later
 
 - [ ] `--lint` and `--explain` for patterns (see group C for traps).
-- [ ] Merge tool: several patterns/runs → genome-wide unique Names.
+- [ ] Merge tool: several patterns/runs → genome-wide unique Names
+      (join GFF3 of several runs, remove elements found twice, number
+      again).
+- [ ] `--format`: a hit of length 0 is written only in JSON lines (GFF3
+      and BED have no place for it).
 - [ ] Several patterns in one run (read the genome once).
 - [ ] Converter JASPAR matrix → integer weight unit with a p-value
       cutoff (the weight unit already works for PWMs; no engine change).

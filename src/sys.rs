@@ -81,6 +81,52 @@ impl Args {
         unsafe { std::ffi::CStr::from_ptr(self.ptrs[i]).to_bytes().to_vec() }
     }
 
+    /// Take the long options (`--name value`, `--name=value`, `--flag`)
+    /// out of argv, before `getopt` sees them; `--` ends the options.
+    /// `with_value`: the names that take a value.
+    #[allow(clippy::type_complexity)]
+    pub fn take_long(
+        &mut self,
+        with_value: &[&str],
+        flags: &[&str],
+    ) -> Result<Vec<(String, Vec<u8>)>, String> {
+        let mut out = Vec::new();
+        let mut i = 1;
+        while i < self.ptrs.len() - 1 {
+            let a = self.get(i);
+            if a == b"--" {
+                break;
+            }
+            let Some(rest) = a.strip_prefix(b"--") else {
+                i += 1;
+                continue;
+            };
+            let (name, val) = match rest.iter().position(|&c| c == b'=') {
+                Some(k) => (&rest[..k], Some(rest[k + 1..].to_vec())),
+                None => (rest, None),
+            };
+            let name = String::from_utf8_lossy(name).into_owned();
+            let mut n = 1;
+            let val = if with_value.contains(&name.as_str()) {
+                match val {
+                    Some(v) => v,
+                    None if i + 1 < self.ptrs.len() - 1 => {
+                        n = 2;
+                        self.get(i + 1)
+                    }
+                    None => return Err(format!("option --{name} needs a value")),
+                }
+            } else if flags.contains(&name.as_str()) && val.is_none() {
+                Vec::new()
+            } else {
+                return Err(format!("unknown option --{name}"));
+            };
+            out.push((name, val));
+            self.ptrs.drain(i..i + n);
+        }
+        Ok(out)
+    }
+
     pub fn getopt(&mut self, optstring: &[u8]) -> c_int {
         unsafe {
             getopt(

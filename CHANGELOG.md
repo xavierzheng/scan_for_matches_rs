@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.0 — 2026-10-07
+
+Output formats.  Without the new options the output (stdout, stderr,
+exit status) is byte-identical to 0.2.0.
+
+### New
+- `--format gff3|bed6|bed12|jsonl`: hits as GFF3, BED or JSON lines.
+  The output is the same for every `-t N` (Names are given by the
+  writer, in input order).
+- Labels in `%` comments of the pattern file name the element and its
+  parts: `%@element TYPE key=value ...` and `%@ TYPE key=value ...` at the
+  end of a line (all units of that line = one feature).  The C program
+  and older versions ignore them.  Bad labels: message and exit status 2
+  (only with `--format`).
+- GFF3: one `repeat_region` (when there are TSD labels), the element and
+  one line for each labelled part, linked by `ID`/`Parent`; every line
+  has the hit's unique `Name` (prefix + number, no fixed width),
+  `Classification`, `Method` (default `structural`); `Sequence_ontology`
+  when given or when the type is a known SO name; `TSD=`/`TIR=` on the
+  element as in EDTA.
+- `--name-prefix P`, `--name-start N`, `--type T`.
+- `--dedup`: with `-c`, the reverse-strand copy of an element already
+  found on the forward strand (same span) is dropped and the element gets
+  strand `.`; `-m` counts the elements written.
+- Labelled copies of the 22 TIR patterns (outside the repository).
+
 ## 0.2.0 — 2026-10-03
 
 Faster.  For all input that 0.1.0 reads, the output is byte-identical

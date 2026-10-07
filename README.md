@@ -15,10 +15,15 @@ The pattern language is described in [`README.original`](README.original)
 
 * **0.0.0** – exact reproduction of the original C program, including its
   bugs, crashes and fixed limits.
-* **0.1.0** (this version) – the bugs and input problems of the original
+* **0.1.0** – the bugs and input problems of the original
   are fixed (see [`CHANGELOG.md`](CHANGELOG.md)).  For all other input the
   results are byte-identical to the original C program: same hits, same
   output format, same exit status, same messages.
+* **0.2.0** – faster (gap skipping, `-t N` threads, gzip input); same
+  output as 0.1.0.
+* **0.3.0** (this version) – output as GFF3, BED or JSON lines
+  (`--format`), with the parts of a hit named by `%@` labels in the
+  pattern file.  Without `--format` the output is the same as 0.2.0.
 
 ## Build
 
@@ -54,6 +59,89 @@ automatically:
 ```sh
 scan_for_matches -c pat_file < genome.fna.gz
 ```
+
+### Output formats (`--format`)
+
+| option | meaning |
+|---|---|
+| `--format F` | `gff3`, `bed6`, `bed12` or `jsonl` instead of the original output |
+| `--name-prefix P` | Name of each hit = P + number (default: the `Name=` of the label, else `sfm`) |
+| `--name-start N` | first number (default 1); numbers have no fixed width: `DTC1` … `DTC123456` |
+| `--type T` | column 3 of the element (default: the `%@element` type, else `sequence_motif`) |
+| `--dedup` | with `-c`: a reverse-strand hit with the same span as a forward hit is dropped; the element gets strand `.`.  `-m` counts the elements written |
+
+The output is the same for every `-t N`.  Long options can be written
+`--format gff3` or `--format=gff3`.
+
+Labels are `%` comments, so the C program and older versions read the
+same pattern file (they ignore the labels):
+
+```
+%@element CACTA_TIR_transposon Name=DTC Classification=TIR/DTC
+p1=3...3               %@ target_site_duplication
+CACTA[0,0,0] p2=7...7  %@ five_prime_terminal_inverted_repeat
+500...15000
+~p2 TAGTG[0,0,0]       %@ three_prime_terminal_inverted_repeat
+p1                     %@ target_site_duplication
+```
+
+* `%@element TYPE key=value ...` (once, anywhere): the element.  Keys:
+  `Name` (Name prefix), `Classification`, `Method` (default
+  `structural`), `Sequence_ontology`; other keys are copied to column 9.
+* `%@ TYPE key=value ...` at the end of a line: all units that start on
+  that line make one feature (here the 5' TIR is `CACTA[0,0,0] p2`).
+  `role=tsd|tir|other` sets the role; by default the type
+  `target_site_duplication` is a TSD and the three
+  `*terminal_inverted_repeat` types are TIRs.
+* Lines without a label (the spacer above) give no feature.
+* Types are free text.  `Sequence_ontology=` is written when the label
+  gives it or when the type is one of 21 SO names the program knows
+  (TE, TSD, TIR, `repeat_region`, `stem_loop`, `TF_binding_site`,
+  `sequence_motif`, `region`, ...).
+* A pattern without labels also works: one feature per hit.
+
+GFF3 of one hit (`>chr1:[21,80]`):
+
+```
+##gff-version 3
+# scan_for_matches 0.3.0 pattern=cacta.pat
+##sequence-region chr1 1 95
+chr1  scan_for_matches  repeat_region                         21  80  .  +  .  ID=DTC1;Name=DTC1;Classification=TIR/DTC;Method=structural;Sequence_ontology=SO:0000657
+chr1  scan_for_matches  target_site_duplication               21  23  .  +  .  ID=DTC1.lTSD;Parent=DTC1;Name=DTC1;...
+chr1  scan_for_matches  CACTA_TIR_transposon                  24  77  .  +  .  ID=DTC1.te;Parent=DTC1;Name=DTC1;...;Sequence_ontology=SO:0002285;TSD=GAT_GAT;TIR=CACTAACGTTGC_GCAACGTTAGTG
+chr1  scan_for_matches  five_prime_terminal_inverted_repeat   24  35  .  +  .  ID=DTC1.lTIR;Parent=DTC1.te;Name=DTC1;...
+chr1  scan_for_matches  three_prime_terminal_inverted_repeat  66  77  .  +  .  ID=DTC1.rTIR;Parent=DTC1.te;Name=DTC1;...
+chr1  scan_for_matches  target_site_duplication               78  80  .  +  .  ID=DTC1.rTSD;Parent=DTC1;Name=DTC1;...
+###
+```
+
+* Coordinates are 1-based and closed on the forward strand, also for
+  `-c` hits (start <= end).
+* The top line carries the bare Name as ID: `repeat_region` (TSD to TSD)
+  when the pattern has TSD labels, else the element.  The element is the
+  hit without its TSDs.  Parts: `.lTSD`/`.rTSD`, `.lTIR`/`.rTIR` (left /
+  right on the forward strand), other parts `.1`, `.2`, ...
+* `TSD=` and `TIR=` (on the element, as in EDTA): the two TSDs / TIRs,
+  forward-strand letters, left_right.
+* Every line of a hit has the same `Name`, `Classification` and `Method`.
+* Names are unique within one run.  For several patterns, give each run
+  its own `--name-prefix`, or `--name-start` to go on numbering.
+
+BED6: `chrom start-1 end Name 0 strand`, one line per hit.  BED12: the
+blocks are the labelled parts (the line spans them), the thick part is
+the element without TSDs; without labels, one block = the hit.
+
+JSON lines: one object per hit, for Python/pandas
+(`pd.read_json(f, lines=True)`):
+
+```
+{"seq":"chr1","strand":"+","start":21,"end":80,"name":"DTC1","type":"CACTA_TIR_transposon","units":[{"line":2,"start":21,"end":23,"text":"GAT","label":"target_site_duplication"},...]}
+```
+
+`units` are all entries of the hit in pattern order: `line` = line of
+the pattern file, `text` = as matched on the strand searched (for a `-`
+hit: the reverse complement of the forward letters at start..end); an
+empty unit has end = start - 1.
 
 Example (from the original README):
 
@@ -125,7 +213,12 @@ cargo test --release
 * `tests/threads.rs` – `-t 2/4/8` give the same output as `-t 1`
   (options, hit and miss limits, ignore list, damaged input, patterns
   that use earlier sequences); `tests/fuzz_threads.py` does the same with
-  random patterns and input.
+  random patterns and input (`FUZZ_FORMAT=1`: with random `--format`
+  and `--dedup`).
+* `tests/formats.rs` – `--format`: GFF3 of a CACTA hit, BED, `--dedup`
+  with `-m`, label errors, and JSON lines whose unit coordinates, read
+  back from the FASTA on both strands, give the printed text (with
+  alternatives `( | )` and zero-width units).
 * `tests/fuzz_skip.py OLD NEW N SEED` – compares a build without gap
   skipping (for example 0.1.0) with a new one on random patterns with
   wide ranges followed by words, reverse complements and repeats.
@@ -194,6 +287,7 @@ speed, so more than 4 threads gains little on this machine.
 
 * `src/main.rs` – port of `scan_for_matches.c` (options, FASTA, output)
 * `src/engine.rs` – port of `ggpunit.c` (pattern parser and matcher)
+* `src/fmt.rs` – `--format` output and the `%@` labels
 * `src/gz.rs` – gzip / bgzip input (system zlib)
 * `src/sys.rs` – the few C library calls used (`getopt`, `sscanf`, stdio
   output, signals, `mmap`)

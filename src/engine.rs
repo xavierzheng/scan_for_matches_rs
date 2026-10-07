@@ -869,6 +869,13 @@ pub struct Engine {
     skip_chains: Vec<(i64, Vec<i64>)>,
     /// punit_to_code for indexes 0..127 (never overwritten)
     p2c_lo: [u8; 128],
+    /// for each unit slot: byte offset in the pattern line where the unit
+    /// starts (output formats only; the parse result does not use it)
+    unit_offs: Vec<u32>,
+    /// record `hit_slots` for each hit (output formats only)
+    track_units: bool,
+    /// the unit slot of each entry of the last hit
+    hit_slots: Vec<u32>,
 }
 
 // An engine owns its memory blocks (the raw pointers point only into
@@ -922,6 +929,9 @@ impl Engine {
             mask_bytes: [(0, 0); 2],
             skip_chains: Vec::new(),
             p2c_lo: [0; 128],
+            unit_offs: Vec::new(),
+            track_units: false,
+            hit_slots: Vec::new(),
         };
         for (i, v) in KNOWN_CHAR.iter().enumerate() {
             e.wb(e.mem.sa(A_KNOWN_CHAR) + i as i64, *v);
@@ -1462,6 +1472,11 @@ impl Engine {
         }
         let pu1 = self.pup;
         self.pup += SZ;
+        let slot = ((pu1 - self.mem.sa(A_PU_S)) / SZ) as usize;
+        if self.unit_offs.len() <= slot {
+            self.unit_offs.resize(slot + 1, u32::MAX);
+        }
+        self.unit_offs[slot] = p as u32;
         if let Some((i, p1)) = name_assgn(l, p) {
             let slot = self.mem.sa(A_NAMES) + 8 * i as i64;
             if self.r64(slot) != 0 {
@@ -2623,6 +2638,72 @@ impl Engine {
         true
     }
 
+    /// The unit slot of each hit entry, in the order of the entries: the
+    /// walk of collect_hits_checked, recording the unit instead of its hit.
+    fn collect_slots(&mut self, pu: i64) {
+        let m = self.mem;
+        let base = m.sa(A_PU_S);
+        self.hit_slots.clear();
+        let mut last: i64 = 0;
+        let mut pu = pu;
+        while pu != 0 {
+            if m.r32(pu + O_TYPE) != OR_PUNIT {
+                let k = pu.wrapping_sub(base);
+                self.hit_slots
+                    .push(if k >= 0 && k % SZ == 0 && k / SZ < N_SLOTS {
+                        (k / SZ) as u32
+                    } else {
+                        u32::MAX
+                    });
+                last = pu;
+                pu = m.r64(pu + O_PREV);
+            } else if m.r64(pu + O_NXT) == last {
+                pu = if m.r32(pu + O_U24) == 1 {
+                    m.r64(pu + O_U0)
+                } else {
+                    m.r64(pu + O_U8)
+                };
+                loop {
+                    let n = m.r64(pu + O_NXT);
+                    if n == 0 {
+                        break;
+                    }
+                    pu = n;
+                }
+                last = 0;
+            } else {
+                last = pu;
+                pu = m.r64(pu + O_PREV);
+            }
+        }
+        self.hit_slots.reverse();
+    }
+
+    /// Record which unit gave each entry of a hit (see `hit_slots`).
+    pub fn set_track_units(&mut self, on: bool) {
+        self.track_units = on;
+    }
+
+    /// The unit slot of each entry of the last hit (`set_track_units`);
+    /// u32::MAX for an entry that is not a unit of the pattern.
+    pub fn hit_slots(&self) -> &[u32] {
+        &self.hit_slots
+    }
+
+    /// (slot, byte offset in the pattern line) of every unit of the
+    /// parsed pattern except the alternatives `( | )` themselves.
+    pub fn unit_offsets(&self) -> Vec<(u32, usize)> {
+        let base = self.mem.sa(A_PU_S);
+        let n = ((self.pup - base) / SZ) as usize;
+        (0..n)
+            .filter(|&k| self.r32(base + k as i64 * SZ + O_TYPE) != OR_PUNIT)
+            .filter_map(|k| {
+                let off = *self.unit_offs.get(k)?;
+                (off != u32::MAX).then_some((k as u32, off as usize))
+            })
+            .collect()
+    }
+
     fn collect_hits_checked(m: M, pu: i64, revhits: &mut Vec<i64>) {
         revhits.clear();
         let mut last: i64 = 0;
@@ -3146,6 +3227,9 @@ impl Engine {
         {
             let mut revhits = std::mem::take(&mut self.revhits);
             self.collect_hits(cr, &mut revhits);
+            if self.track_units {
+                self.collect_slots(cr);
+            }
             let n = revhits.len();
             if hits.len() < n + 1 {
                 hits.resize(n + 1, 0);

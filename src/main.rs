@@ -6,6 +6,7 @@
 //! reading and hit printing).  The pattern language lives in engine.rs.
 
 mod engine;
+mod fmt;
 mod gz;
 mod sys;
 
@@ -182,8 +183,11 @@ impl<R: Read> Input<R> {
 /// Where formatted hits go: stdout, or a buffer (threads).
 trait Sink {
     fn write(&mut self, b: &[u8]);
-    /// called after each complete hit
-    fn end_hit(&mut self) {}
+    /// called after each complete hit; false: the hit was dropped
+    /// (`--dedup`) and does not count for `-m`
+    fn end_hit(&mut self) -> bool {
+        true
+    }
 }
 
 impl Sink for sys::Out {
@@ -203,21 +207,96 @@ impl Sink for HitBuf {
     fn write(&mut self, b: &[u8]) {
         self.buf.extend_from_slice(b);
     }
-    fn end_hit(&mut self) {
+    fn end_hit(&mut self) -> bool {
         self.ends.push(self.buf.len());
+        true
+    }
+}
+
+/// The final output: the hits as the C program prints them, or in one of
+/// the formats of `--format` (each hit arrives as a raw record).
+enum Writer {
+    Plain(sys::Out),
+    Fmt {
+        out: sys::Out,
+        f: Box<fmt::Formatter>,
+        raw: Vec<u8>,
+        text: Vec<u8>,
+    },
+}
+
+impl Writer {
+    fn new(f: Option<fmt::Formatter>) -> Writer {
+        let mut out = sys::Out::new();
+        match f {
+            None => Writer::Plain(out),
+            Some(f) => {
+                let mut text = Vec::new();
+                f.header(&mut text);
+                out.write(&text);
+                text.clear();
+                Writer::Fmt {
+                    out,
+                    f: Box::new(f),
+                    raw: Vec::new(),
+                    text,
+                }
+            }
+        }
+    }
+
+    /// After the last hit of a record (and before the program ends).
+    fn end_record(&mut self) {
+        if let Writer::Fmt { out, f, text, .. } = self {
+            f.end_record(text);
+            out.write(text);
+            text.clear();
+        }
+    }
+}
+
+impl Sink for Writer {
+    fn write(&mut self, b: &[u8]) {
+        match self {
+            Writer::Plain(out) => out.write(b),
+            Writer::Fmt { raw, .. } => raw.extend_from_slice(b),
+        }
+    }
+    fn end_hit(&mut self) -> bool {
+        match self {
+            Writer::Plain(_) => true,
+            Writer::Fmt { out, f, raw, text } => {
+                let counted = f.hit(raw, text);
+                raw.clear();
+                out.write(text);
+                text.clear();
+                counted
+            }
+        }
     }
 }
 
 struct Printer<S: Sink> {
     out: S,
     line: Vec<u8>,
+    /// raw records for `--format` instead of the C output
+    raw: bool,
 }
 
 impl<S: Sink> Printer<S> {
     /// Print one hit the way the C code does: `>id:[a,b]` on one line,
     /// then every matched piece followed by a space, then a newline.
     #[allow(clippy::too_many_arguments)]
-    fn hit(&mut self, id: &[u8], a: i64, b: i64, hits: &[i64], n: usize, data: &Buf, cdata: i64) {
+    fn hit(
+        &mut self,
+        id: &[u8],
+        a: i64,
+        b: i64,
+        hits: &[i64],
+        n: usize,
+        data: &Buf,
+        cdata: i64,
+    ) -> bool {
         self.line.clear();
         self.line.push(b'>');
         self.line.extend_from_slice(id);
@@ -239,7 +318,7 @@ impl<S: Sink> Printer<S> {
         }
         self.line.push(b'\n');
         self.out.write(&self.line);
-        self.out.end_hit();
+        self.out.end_hit()
     }
 }
 
@@ -318,6 +397,8 @@ struct Opts {
     protein: bool,
     complements: bool,
     show_overlaps: bool,
+    /// `--format`: raw records, unit of each hit entry tracked
+    raw: bool,
 }
 
 /// Turn the record in `data` (length `ln`) into its reverse complement.
@@ -331,6 +412,7 @@ fn reverse_complement(data: &mut Buf, ln: usize) {
 
 /// Print the hit in `hits` (`n` units); on the reverse strand (`rev`) the
 /// positions are counted on the forward strand, as in the C code.
+/// Returns whether the hit counts for `-m`.
 #[allow(clippy::too_many_arguments)]
 fn print_hit<S: Sink>(
     pr: &mut Printer<S>,
@@ -341,8 +423,24 @@ fn print_hit<S: Sink>(
     hits: &[i64],
     n: usize,
     data: &Buf,
-) {
+) -> bool {
     let cb = eng.cdata_base();
+    if pr.raw {
+        pr.line.clear();
+        fmt::encode(
+            &mut pr.line,
+            rev,
+            ln,
+            id,
+            hits,
+            n,
+            eng.hit_slots(),
+            data,
+            cb,
+        );
+        pr.out.write(&pr.line);
+        return pr.out.end_hit();
+    }
     if !rev {
         pr.hit(
             id,
@@ -352,7 +450,7 @@ fn print_hit<S: Sink>(
             n,
             data,
             cb,
-        );
+        )
     } else {
         let l = ln as i64;
         pr.hit(
@@ -363,7 +461,7 @@ fn print_hit<S: Sink>(
             n,
             data,
             cb,
-        );
+        )
     }
 }
 
@@ -394,8 +492,9 @@ fn scan_record<S: Sink>(
     let mut i = eng.first_match(ln as i32, hits);
     while *max_hits > 0 && i > 0 {
         hit_in_line = true;
-        *max_hits -= 1;
-        print_hit(pr, eng, id, false, ln, hits, i as usize, data);
+        if print_hit(pr, eng, id, false, ln, hits, i as usize, data) {
+            *max_hits -= 1;
+        }
         i = if !opts.show_overlaps {
             eng.cont_match(hits)
         } else {
@@ -410,8 +509,9 @@ fn scan_record<S: Sink>(
         let mut i = eng.first_match(ln as i32, hits);
         while *max_hits > 0 && i > 0 {
             hit_in_line = true;
-            *max_hits -= 1;
-            print_hit(pr, eng, id, true, ln, hits, i as usize, data);
+            if print_hit(pr, eng, id, true, ln, hits, i as usize, data) {
+                *max_hits -= 1;
+            }
             i = eng.cont_match(hits);
         }
     }
@@ -436,6 +536,7 @@ fn read_error(msg: &[u8]) -> ! {
 /// One thread: records are read, searched and printed one after the other.
 fn run_sequential(
     mut eng: Engine,
+    out: Writer,
     opts: Opts,
     ignore: &std::collections::HashSet<Vec<u8>>,
     mut max_hits: i32,
@@ -444,9 +545,11 @@ fn run_sequential(
     let mut data = Buf::new();
     let mut hits: Vec<i64> = vec![0; 2000];
     let mut pr = Printer {
-        out: sys::Out::new(),
+        out,
         line: Vec::new(),
+        raw: opts.raw,
     };
+    eng.set_track_units(opts.raw);
     let mut rd = FastaReader::new(open_fasta_input(std::io::stdin().lock()));
     while max_hits > 0 {
         match rd.next() {
@@ -456,7 +559,7 @@ fn run_sequential(
                 if ignore.contains(&id) {
                     continue;
                 }
-                if !scan_record(
+                let hit = scan_record(
                     &mut eng,
                     &mut data,
                     &mut hits,
@@ -465,7 +568,9 @@ fn run_sequential(
                     &body,
                     opts,
                     &mut max_hits,
-                ) {
+                );
+                pr.out.end_record();
+                if !hit {
                     missed(&mut stop_after);
                 }
             }
@@ -542,11 +647,15 @@ struct PieceEngine {
     loaded: Option<(usize, bool)>,
     /// the last hit `join_piece` found with this engine was not empty
     last_hit_nonempty: bool,
+    /// `--format`: raw records
+    raw: bool,
 }
 
 impl PieceEngine {
-    fn new(eng: Engine) -> PieceEngine {
+    fn new(mut eng: Engine, raw: bool) -> PieceEngine {
+        eng.set_track_units(raw);
         PieceEngine {
+            raw,
             eng,
             data: Buf::new(),
             hits: vec![0; 2000],
@@ -586,6 +695,7 @@ impl PieceEngine {
         let mut pr = Printer {
             out: HitBuf::default(),
             line: Vec::new(),
+            raw: self.raw,
         };
         let (mut starts, mut pasts) = (Vec::new(), Vec::new());
         let cb = self.eng.cdata_base();
@@ -623,6 +733,7 @@ impl PieceEngine {
 /// equals the one-thread output.
 #[allow(clippy::too_many_arguments)]
 fn run_threads(
+    mut out: Writer,
     threads: usize,
     line: Vec<u8>,
     seq_type: i32,
@@ -716,7 +827,7 @@ fn run_threads(
             .spawn(move || {
                 let mut eng = Engine::new();
                 eng.parse_cmd(&line, seq_type);
-                let mut pe = PieceEngine::new(eng);
+                let mut pe = PieceEngine::new(eng, opts.raw);
                 let mut data = Buf::new();
                 let mut hits: Vec<i64> = vec![0; 2000];
                 loop {
@@ -728,6 +839,7 @@ fn run_threads(
                             let mut pr = Printer {
                                 out: HitBuf::default(),
                                 line: Vec::new(),
+                                raw: opts.raw,
                             };
                             let mut unlimited = i32::MAX;
                             scan_record(
@@ -756,7 +868,6 @@ fn run_threads(
     }
     drop(done_tx);
 
-    let mut out = sys::Out::new();
     let mut waiting = std::collections::BTreeMap::new();
     let mut next = 0usize;
     // a long record: end of the last hit printed on this strand, and
@@ -767,6 +878,7 @@ fn run_threads(
     let mut wpr = Printer {
         out: HitBuf::default(),
         line: Vec::new(),
+        raw: opts.raw,
     };
     while max_hits > 0 {
         let item = match waiting.remove(&next) {
@@ -782,9 +894,13 @@ fn run_threads(
         next += 1;
         match item {
             Done::End => break,
-            Done::Error(msg) => read_error(&msg),
+            Done::Error(msg) => {
+                out.end_record();
+                read_error(&msg)
+            }
             Done::Hits(h) => {
                 let printed = print_hits(&mut out, &h, 0, &mut max_hits);
+                out.end_record();
                 if printed == 0 {
                     missed(&mut stop_after);
                 }
@@ -803,22 +919,26 @@ fn run_threads(
                     let we = weng.get_or_insert_with(|| {
                         let mut e = Engine::new();
                         e.parse_cmd(&line, seq_type);
-                        PieceEngine::new(e)
+                        PieceEngine::new(e, opts.raw)
                     });
                     rec_hit |=
                         join_piece(&mut out, &job, &ph, we, &mut wpr, &mut past, &mut max_hits);
                 }
-                if job.end_of_record && !rec_hit && max_hits > 0 {
-                    missed(&mut stop_after);
+                if job.end_of_record {
+                    out.end_record();
+                    if !rec_hit && max_hits > 0 {
+                        missed(&mut stop_after);
+                    }
                 }
             }
         }
     }
+    out.end_record();
 }
 
 /// Print the hits of `h` from hit `from` on while `max_hits` allows;
-/// returns how many were printed.
-fn print_hits(out: &mut sys::Out, h: &HitBuf, from: usize, max_hits: &mut i32) -> usize {
+/// returns how many were printed (or dropped by `--dedup`).
+fn print_hits(out: &mut Writer, h: &HitBuf, from: usize, max_hits: &mut i32) -> usize {
     let mut start = if from == 0 { 0 } else { h.ends[from - 1] };
     let mut printed = 0;
     for &end in &h.ends[from..] {
@@ -827,7 +947,9 @@ fn print_hits(out: &mut sys::Out, h: &HitBuf, from: usize, max_hits: &mut i32) -
         }
         out.write(&h.buf[start..end]);
         start = end;
-        *max_hits -= 1;
+        if out.end_hit() {
+            *max_hits -= 1;
+        }
         printed += 1;
     }
     printed
@@ -841,7 +963,7 @@ fn print_hits(out: &mut sys::Out, h: &HitBuf, from: usize, max_hits: &mut i32) -
 /// printed.
 #[allow(clippy::too_many_arguments)]
 fn join_piece(
-    out: &mut sys::Out,
+    out: &mut Writer,
     job: &PieceJob,
     ph: &PieceHits,
     we: &mut PieceEngine,
@@ -900,12 +1022,20 @@ fn join_piece(
             &we.data,
         );
         out.write(&wpr.out.buf);
-        *max_hits -= 1;
+        if out.end_hit() {
+            *max_hits -= 1;
+        }
         printed = true;
         let start = we.hits[0] - cb;
         *past = we.hits[n] - cb;
         we.last_hit_nonempty = *past > start;
     }
+}
+
+/// An error in the long options or the labels of the pattern file.
+fn long_error(msg: &str) -> ! {
+    eprintln!("scan_for_matches: {msg}");
+    std::process::exit(2);
 }
 
 fn usage(errflag: i32, optind: i32, argc: i32) -> ! {
@@ -961,7 +1091,42 @@ fn main() {
 
 fn real_main() {
     let mut args = sys::Args::from_env();
+    // long options (output formats); the C options are read by getopt
+    let long = args
+        .take_long(&["format", "name-prefix", "name-start", "type"], &["dedup"])
+        .unwrap_or_else(|e| long_error(&e));
     let argc = args.argc();
+    let mut fopts = fmt::Options {
+        format: fmt::Format::Gff3,
+        name_prefix: None,
+        name_start: 1,
+        typ: None,
+        dedup: false,
+        pattern: Vec::new(),
+    };
+    let mut format = None;
+    for (name, v) in &long {
+        match name.as_str() {
+            "format" => {
+                format = Some(
+                    fmt::Format::parse(v)
+                        .unwrap_or_else(|| long_error("--format is gff3, bed6, bed12 or jsonl")),
+                )
+            }
+            "name-prefix" => fopts.name_prefix = Some(v.clone()),
+            "name-start" => {
+                fopts.name_start = std::str::from_utf8(v)
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| long_error("--name-start needs a number"))
+            }
+            "type" => fopts.typ = Some(v.clone()),
+            _ => fopts.dedup = true,
+        }
+    }
+    if format.is_none() && !long.is_empty() {
+        long_error("--dedup, --name-prefix, --name-start and --type need --format");
+    }
 
     let mut stop_after: i32 = 100_000_000;
     let mut max_hits: i32 = 100_000_000;
@@ -1023,7 +1188,8 @@ fn real_main() {
         eprintln!("-c (complementary strand) cannot be used with -p (protein sequences)");
         usage(errflag, optind, argc);
     }
-    let pat_file = match open_path(&args.get(optind as usize)) {
+    fopts.pattern = args.get(optind as usize);
+    let pat_file = match open_path(&fopts.pattern) {
         Some(f) => f,
         None => usage(errflag, optind, argc),
     };
@@ -1043,26 +1209,41 @@ fn real_main() {
         }
     }
 
-    // read the pattern: '%' starts a comment, newlines become spaces
+    // read the pattern: '%' starts a comment, newlines become spaces.
+    // For --format: the source line of each byte, and the comments.
     let mut line: Vec<u8> = Vec::new();
+    let mut src_line: Vec<u32> = Vec::new();
+    let mut comments: Vec<(u32, Vec<u8>)> = Vec::new();
     {
         let mut fp = Input::new(pat_file);
+        let mut n_line = 1u32;
         let mut i = fp.getc();
         while i != EOF && line.len() < MAX_PAT_LINE_LN - 1 {
             if i == b'%' as i32 {
+                let mut text = Vec::new();
                 loop {
                     i = fp.getc();
                     if i == b'\n' as i32 || i == EOF {
                         break;
                     }
+                    text.push(i as u8);
                 }
+                if text.last() == Some(&b'\r') {
+                    text.pop();
+                }
+                comments.push((n_line, text));
                 if i != EOF {
+                    n_line += 1;
                     i = b' ' as i32;
                 }
             } else if i == b'\n' as i32 || i == b'\r' as i32 {
+                if i == b'\n' as i32 {
+                    n_line += 1;
+                }
                 i = b' ' as i32;
             } else {
                 line.push(i as u8);
+                src_line.push(n_line);
                 i = fp.getc();
             }
         }
@@ -1083,15 +1264,29 @@ fn real_main() {
         std::process::exit(1);
     }
 
+    let formatter = format.map(|f| {
+        fopts.format = f;
+        let lb = fmt::parse_labels(&comments).unwrap_or_else(|e| long_error(&e));
+        let units: Vec<(u32, u32)> = eng
+            .unit_offsets()
+            .into_iter()
+            .map(|(slot, off)| (slot, src_line.get(off).copied().unwrap_or(0)))
+            .collect();
+        let (group, lines) = lb.assign(&units).unwrap_or_else(|e| long_error(&e));
+        fmt::Formatter::new(fopts, lb, group, lines)
+    });
     let opts = Opts {
         protein,
         complements,
         show_overlaps,
+        raw: formatter.is_some(),
     };
+    let out = Writer::new(formatter);
     // patterns that use matches of earlier sequences stay on one thread
     if threads > 1 && !eng.uses_earlier_state() && max_hits > 0 {
         let split = eng.can_split();
         run_threads(
+            out,
             threads,
             line,
             if protein { PEPTIDE } else { DNA },
@@ -1102,6 +1297,6 @@ fn real_main() {
             stop_after,
         );
     } else {
-        run_sequential(eng, opts, &ignore, max_hits, stop_after);
+        run_sequential(eng, out, opts, &ignore, max_hits, stop_after);
     }
 }

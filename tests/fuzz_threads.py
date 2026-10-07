@@ -23,6 +23,7 @@ BIN = os.path.abspath(sys.argv[1])
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 1000
 SEED = int(sys.argv[3]) if len(sys.argv) > 3 else 1
 T = sys.argv[4] if len(sys.argv) > 4 else "4"
+FMT = os.environ.get("FUZZ_FORMAT") == "1"
 
 
 def run(args, pat, inp, d, piece=None):
@@ -56,6 +57,12 @@ def one(case):
         args += ["-m", str(r.randint(0, 10))]
     if r.random() < 0.2:
         args += ["-n", str(r.randint(1, 5))]
+    if FMT:
+        # FUZZ_FORMAT=1: the output formats (numbering, --dedup) must not
+        # depend on -t either
+        args += ["--format", r.choice(["gff3", "bed6", "bed12", "jsonl"])]
+        if r.random() < 0.5:
+            args.append("--dedup")
     with tempfile.TemporaryDirectory() as d:
         if r.random() < 0.2 and ids:
             with open(os.path.join(d, "ign"), "w") as f:
