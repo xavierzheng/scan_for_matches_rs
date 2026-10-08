@@ -892,6 +892,9 @@ fn run_threads(
     use std::sync::{Arc, Mutex};
     let n_pats = lines.len();
     let (job_tx, job_rx) = mpsc::sync_channel::<(usize, Job)>(2 * threads);
+    // at most this many jobs between the reader and the writer: when an
+    // early piece is slow, the finished later ones wait in memory
+    let (ticket_tx, ticket_rx) = mpsc::sync_channel::<()>(4 * threads);
     let job_rx = Arc::new(Mutex::new(job_rx));
     let (done_tx, done_rx) = mpsc::channel::<(usize, Done)>();
     let split: Vec<bool> = split.iter().map(|&s| s && !opts.protein).collect();
@@ -922,7 +925,7 @@ fn run_threads(
                     serial += 1;
                     let jobs = record_jobs(&rec, &split, &rwarm, base_piece, opts.complements);
                     for job in jobs {
-                        if job_tx.send((k, job)).is_err() {
+                        if ticket_tx.send(()).is_err() || job_tx.send((k, job)).is_err() {
                             return;
                         }
                         k += 1;
@@ -1045,6 +1048,9 @@ fn run_threads(
             },
         };
         next += 1;
+        if matches!(item, Done::Hits(..) | Done::Piece(..)) {
+            let _ = ticket_rx.try_recv();
+        }
         let end_of_record = match item {
             Done::End => break,
             Done::Error(msg) => {
@@ -1778,6 +1784,9 @@ fn real_main() {
             .collect();
         fmt::Formatter::new(fopts, labels)
     });
+    if let Some(f) = &formatter {
+        fmt::set_text_slots(f.text_slots());
+    }
     let opts = Opts {
         protein,
         complements,

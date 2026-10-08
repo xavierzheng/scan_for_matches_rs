@@ -217,8 +217,26 @@ fn put_u64(b: &mut Vec<u8>, v: u64) {
     b.extend_from_slice(&v.to_le_bytes());
 }
 
+/// The unit slots whose text the format uses, for each pattern (None: all
+/// slots).  Set once before the search; without it all text is sent.
+static TEXT_SLOTS: std::sync::OnceLock<Vec<Option<Vec<bool>>>> = std::sync::OnceLock::new();
+
+/// Send only the text of these slots to the writer (see `TEXT_SLOTS`):
+/// the text of a 30 kb gap is not needed for BED.
+pub fn set_text_slots(v: Vec<Option<Vec<bool>>>) {
+    let _ = TEXT_SLOTS.set(v);
+}
+
+fn needs_text(pat: usize, slot: u32) -> bool {
+    match TEXT_SLOTS.get().and_then(|t| t.get(pat)) {
+        Some(Some(m)) => m.get(slot as usize).copied().unwrap_or(false),
+        _ => true,
+    }
+}
+
 /// Encode a hit: pattern, strand, record length, id, and for each entry
-/// its unit slot, start (offset on the strand searched), length and text.
+/// its unit slot, start (offset on the strand searched), length and text
+/// (when the format uses it).
 #[allow(clippy::too_many_arguments)]
 pub fn encode(
     b: &mut Vec<u8>,
@@ -246,8 +264,13 @@ pub fn encode(
         put_u64(b, slots.get(i).copied().unwrap_or(u32::MAX) as u64);
         put_u64(b, from as u64);
         put_u64(b, len as u64);
-        for p in from..from + len {
-            b.push(data.get(p));
+        let slot = slots.get(i).copied().unwrap_or(u32::MAX);
+        let text = needs_text(pat, slot);
+        b.push(text as u8);
+        if text {
+            for p in from..from + len {
+                b.push(data.get(p));
+            }
         }
     }
 }
@@ -257,7 +280,8 @@ struct Unit {
     /// 1-based closed on the forward strand; end = start - 1 when empty
     start: i64,
     end: i64,
-    /// as matched, on the strand searched
+    /// as matched, on the strand searched (empty when the format does not
+    /// use it)
     text: Vec<u8>,
 }
 
@@ -279,6 +303,11 @@ impl Rd<'_> {
         let (a, b) = self.0.split_at(8);
         self.0 = b;
         u64::from_le_bytes(a.try_into().unwrap())
+    }
+    fn u8(&mut self) -> u8 {
+        let (a, b) = self.0.split_at(1);
+        self.0 = b;
+        a[0]
     }
     fn bytes(&mut self, n: usize) -> Vec<u8> {
         let (a, b) = self.0.split_at(n);
@@ -318,7 +347,11 @@ fn decode(raw: &[u8]) -> Hit {
             slot,
             start,
             end,
-            text: r.bytes(len as usize),
+            text: if r.u8() != 0 {
+                r.bytes(len as usize)
+            } else {
+                Vec::new()
+            },
         });
     }
     Hit {
@@ -406,6 +439,25 @@ impl Formatter {
             fwd_spans: HashSet::new(),
             both: HashSet::new(),
         }
+    }
+
+    /// For each pattern, the unit slots whose text the format uses (None:
+    /// all): JSON lines all; GFF3 the TSD and TIR parts (`TSD=`, `TIR=`);
+    /// BED none.
+    pub fn text_slots(&self) -> Vec<Option<Vec<bool>>> {
+        self.pats
+            .iter()
+            .map(|p| match self.o.format {
+                Format::Jsonl => None,
+                Format::Bed6 | Format::Bed12 => Some(Vec::new()),
+                Format::Gff3 => Some(
+                    p.group
+                        .iter()
+                        .map(|&g| g != u32::MAX && p.lb.parts[g as usize].1.role != Role::Other)
+                        .collect(),
+                ),
+            })
+            .collect()
     }
 
     /// Text written before the first hit.
