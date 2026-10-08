@@ -1,0 +1,25 @@
+scan_for_matches_rs is a Rust port of scan_for_matches.
+
+Original program
+  scan_for_matches: A Program to Scan Nucleotide or Protein Sequences for
+  Matching Patterns.  Ross Overbeek, MCS, Argonne National Laboratory,
+  Argonne, IL 60439, USA.  Source: The SEED
+  (https://www.theseed.org/servers/downloads/scan_for_matches.tgz;
+  https://blog.theseed.org/servers/2010/07/scan-for-matches.html).
+  Paper: Dsouza M, Larsen N, Overbeek R. 1997. Searching for patterns in
+  genomic data. Trends in Genetics 13:497-498.
+
+The original source package has no license statement.  The author of this
+port could not reach the original authors.  So:
+
+* The pattern language, the search method and the program design are the
+  work of the original authors.  The Rust code follows the C code
+  (scan_for_matches.c, ggpunit.c) closely.
+* README.original and the original test files (tests/data/test_dna_input,
+  test_dna_patterns, test_prot_input, test_prot_patterns, test_output) are
+  copies of files of the original package and belong to their authors.
+* The BSD 3-Clause License in LICENSE covers only the new work of this
+  port.  It gives no rights in the original work.
+
+If you are an author of the original program and want a change here,
+please open an issue on https://github.com/xavierzheng/scan_for_matches_rs.

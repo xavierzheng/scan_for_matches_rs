@@ -22,7 +22,7 @@ jobs:
         run: |
           name=scan_for_matches-${GITHUB_REF_NAME}-macos-arm64
           mkdir "$name"
-          cp target/release/scan_for_matches README.md README.original CHANGELOG.md TODO.md "$name"/
+          cp target/release/scan_for_matches README.md README.original CHANGELOG.md TODO.md LICENSE NOTICE "$name"/
           tar czf "$name.tar.gz" "$name"
           # notes: the CHANGELOG section of this version
           awk -v v="## ${GITHUB_REF_NAME} " 'index($0, v) == 1 {p=1; next} /^## / {p=0} p' CHANGELOG.md > notes.md

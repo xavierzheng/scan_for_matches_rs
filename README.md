@@ -528,3 +528,15 @@ speed, so more than 4 threads gains little on this machine.
 * `src/gz.rs` – gzip / bgzip input (system zlib; bgzip blocks in threads)
 * `src/sys.rs` – the few C library calls used (`getopt`, `sscanf`, stdio
   output, signals, `mmap`)
+
+## License and credits
+
+The original **scan_for_matches** was written by Ross Overbeek and
+colleagues at Argonne National Laboratory (Dsouza, Larsen & Overbeek
+1997, *Trends in Genetics* 13:497–498; source from The SEED).  This port
+follows their C code and keeps their pattern language.
+
+The new work of this port is under the BSD 3-Clause License
+([`LICENSE`](LICENSE)).  The original package has no license statement;
+`README.original` and the original test files belong to their authors.
+See [`NOTICE`](NOTICE).
