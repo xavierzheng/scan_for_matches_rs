@@ -934,6 +934,8 @@ pub struct Engine {
     revhits: Vec<i64>,
     /// counts changes of the coded sequence (for the k-mer index)
     cd_gen: u64,
+    /// bytes of the coded sequence buffer used since `release_data`
+    cd_hi: usize,
     /// k-mer index of the coded sequence, built when first needed
     kidx: Option<KIndex>,
     /// used instead of `kidx` while searching a piece of a long record
@@ -1009,6 +1011,7 @@ impl Engine {
             end_srch: 0,
             revhits: Vec::with_capacity(256),
             cd_gen: 0,
+            cd_hi: 0,
             kidx: None,
             shared_kidx: None,
             index_threads: 1,
@@ -1174,6 +1177,7 @@ impl Engine {
     pub fn comp_data(&mut self, data: &Buf) {
         self.cd_gen += 1;
         let n = data.v.iter().position(|&c| c == 0).expect("NUL at the end");
+        self.cd_hi = self.cd_hi.max(n + 1);
         let cd = unsafe { std::slice::from_raw_parts_mut(self.mem.cd, n + 1) };
         let mut t = [0u8; 256];
         t[..128].copy_from_slice(&self.p2c_lo);
@@ -1197,6 +1201,19 @@ impl Engine {
             }
             k += 1;
         }
+        self.cd_hi = self.cd_hi.max(k + 1);
+    }
+
+    /// Give the memory of the coded sequence and of the k-mer index back
+    /// to the system (several patterns: an engine that is not used for a
+    /// while must not hold a long record).  The next sequence is loaded
+    /// again with `comp_data` / `copy_data`.
+    pub fn release_data(&mut self) {
+        self.kidx = None;
+        self.shared_kidx = None;
+        self.cd_gen += 1;
+        crate::sys::release_pages(self.mem.cd, self.cd_hi.next_multiple_of(PAGE));
+        self.cd_hi = 0;
     }
 
     // ------------------------------------------------------------------

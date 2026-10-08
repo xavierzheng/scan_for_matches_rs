@@ -324,5 +324,19 @@ download did not include program binaries, and no user genome was run.
 
   Give each pattern its own `--name-prefix` (or `--name-start`), so Names
   do not repeat between runs.
+- (0.4.0) All patterns in one run (the genome is read once), then one
+  file with genome-wide unique Names and without elements found by two
+  patterns:
+
+  ```sh
+  scan_for_matches -t 20 -c --dedup --format gff3 \
+      --input genome.fna.gz --output tir_all.gff3 tir_scan_patterns/labelled/*.pat
+  scan_for_matches --merge --output tir_merged.gff3 tir_all.gff3
+  ```
+
+  `--merge` keeps the first of two elements with the same span (here:
+  the pattern that comes first); `--overlap 0.9` also joins elements
+  that overlap by 90 % of each.  `scan_for_matches --lint FILE.pat` and
+  `--explain FILE.pat` check and describe a pattern you change.
 - Speed of all 22 patterns on the 1.0 Gb *B. napus* genome: see
   `CHANGELOG.md`.

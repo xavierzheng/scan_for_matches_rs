@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.4.0 — 2026-10-08
+
+Several patterns in one run, pattern checks, a merge tool.  Without the
+new options the output is byte-identical to 0.3.0 (only the version in
+the GFF3 header line changes).
+
+### New
+- Several pattern files in one run (with `--format`): the input is read
+  once, each record is searched by each pattern in turn.  The hits of
+  each pattern equal a run with that pattern alone, for every `-t N`.
+  Names: one counter for each Name prefix; a Name is never given twice
+  (also when a prefix ends in a digit: `X` + 11 and `X1` + 1).  GFF3 header: `pattern=` for
+  each file; JSON lines: a `"pattern"` field.  `-m` counts all hits.
+  Before, extra file arguments were ignored; now they are patterns, and
+  without `--format` they are an error (exit status 2).  With `-t N`,
+  a thread holds a long record in one engine at a time (the others give
+  the memory back).
+- `--lint`: errors, warnings and notes for the traps of the pattern
+  language (reversed range, name used before it is defined, symmetric
+  pattern with `-c` and no `--dedup`, `-o -c`, slow wide gaps, text cut
+  at 31 999 bytes, mismatches >= word length, bad labels, ...).  Exit
+  status 1 when there is an error.
+- `--explain`: each unit in plain words, the hit length range, labels.
+- `--merge FILE.gff3 ...`: join the GFF3 of several runs (in priority
+  order), remove the same element found twice (same span; or
+  `--overlap F`, reciprocal), sort (seqid in natural order, then start),
+  and give new genome-wide unique Names (`--name-prefix`,
+  `--name-start`); `ID`/`Parent`/`Name` renamed, the kept element gets
+  `Merged=file:old_Name`.  gzip input is accepted.
+- `tools/jaspar2sfm.py`: a JASPAR matrix to a weight unit, with the
+  cutoff for a p-value (exact distribution of the integer scores).
+  Python standard library only.
+
+### Fixed
+- `-t N` with warm-up (0.3.0): a hit of length 0 at the last position of
+  a piece could be printed twice (the writer searched the next piece
+  again from the end of the last hit, before the piece).  Found by
+  `fuzz_threads.py` (`p1=0...1 ~p1`, small pieces, `SFM_WARM`); TIR
+  patterns have no hits of length 0.
+
+B. napus genome (1.0 Gb, bgzip), 22 TIR patterns, `-c --dedup --format
+gff3 -t 20`, Intel Xeon Gold 6238R: one run with the 22 files 648 s (max
+RSS 6.4 GB); 22 runs (0.3.0) 762 s (max 4.9 GB).  The hits of each
+pattern are the same.
+`--merge` of that output (806 397 elements, 1 thread): 12.7 s, 2.5 GB;
+53 890 elements with the same span removed (202 311 with `--overlap
+0.9`).
+
 ## 0.3.0 — 2026-10-08
 
 Output formats, new options, faster threads.  Without the new options

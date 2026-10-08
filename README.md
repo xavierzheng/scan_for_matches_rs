@@ -21,12 +21,19 @@ The pattern language is described in [`README.original`](README.original)
   output format, same exit status, same messages.
 * **0.2.0** – faster (gap skipping, `-t N` threads, gzip input); same
   output as 0.1.0.
-* **0.3.0** (this version) – output as GFF3, BED or JSON lines
+* **0.3.0** – output as GFF3, BED or JSON lines
   (`--format`), with the parts of a hit named by `%@` labels in the
   pattern file; `--help`, `--input`, `--output`; faster threads (bgzip
   input, k-mer index, long dense hits); the 22 TIR patterns in
   [`tir_scan_patterns/`](tir_scan_patterns/README.md).  Without the new
   options the output is the same as 0.2.0.
+* **0.4.0** (this version) – several patterns in one run (the input is
+  read once), `--lint` and `--explain` for patterns, `--merge` for the
+  GFF3 of several runs (genome-wide unique Names), and
+  `tools/jaspar2sfm.py` (JASPAR matrix → weight unit).  Without the new
+  options the output is the same as 0.3.0 (only the version in the GFF3
+  header changes; extra file arguments, which 0.3.0 ignored, are now
+  pattern files).
 
 ## Build
 
@@ -44,6 +51,10 @@ Same command line as the original, or with input and output files:
 ```sh
 scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] [-t N] pattern_file < fasta_input > hits
 scan_for_matches [options] --input fasta_input --output hits pattern_file
+scan_for_matches --format F [options] pattern_file pattern_file ... < fasta_input > hits
+scan_for_matches --lint [-p] [-c] [--dedup] pattern_file ...
+scan_for_matches --explain [-p] pattern_file ...
+scan_for_matches --merge [merge options] run1.gff3 run2.gff3 ... > all.gff3
 ```
 
 `scan_for_matches --help` shows all options.
@@ -118,7 +129,7 @@ GFF3 of one hit (`>chr1:[21,80]`):
 
 ```
 ##gff-version 3
-# scan_for_matches 0.3.0 pattern=cacta.pat
+# scan_for_matches 0.4.0 pattern=cacta.pat
 ##sequence-region chr1 1 95
 chr1  scan_for_matches  repeat_region                         21  80  .  +  .  ID=DTC1;Name=DTC1;Classification=TIR/DTC;Method=structural;Sequence_ontology=SO:0000657
 chr1  scan_for_matches  target_site_duplication               21  23  .  +  .  ID=DTC1.lTSD;Parent=DTC1;Name=DTC1;...
@@ -138,8 +149,9 @@ chr1  scan_for_matches  target_site_duplication               78  80  .  +  .  I
 * `TSD=` and `TIR=` (on the element, as in EDTA): the two TSDs / TIRs,
   forward-strand letters, left_right.
 * Every line of a hit has the same `Name`, `Classification` and `Method`.
-* Names are unique within one run.  For several patterns, give each run
-  its own `--name-prefix`, or `--name-start` to go on numbering.
+* Names are unique within one run (also with several pattern files in
+  one run: one counter for each Name prefix).  To join separate runs,
+  use `--merge` (below), or give each run its own `--name-prefix`.
 
 BED6: `chrom start-1 end Name 0 strand`, one line per hit.  BED12: the
 blocks are the labelled parts (the line spans them), the thick part is
@@ -156,6 +168,128 @@ JSON lines: one object per hit, for Python/pandas
 the pattern file, `text` = as matched on the strand searched (for a `-`
 hit: the reverse complement of the forward letters at start..end); an
 empty unit has end = start - 1.
+
+### Several patterns in one run
+
+```sh
+scan_for_matches -t 20 -c --dedup --format gff3 \
+    --input genome.fna.gz --output tir.gff3 tir_scan_patterns/labelled/*.pat
+```
+
+* Needs `--format` (the original output cannot show which pattern made a
+  hit).  The input is read and decompressed once; each record is
+  searched by each pattern in turn, and its hits are written pattern by
+  pattern, in the order of the files.
+* The hits of each pattern are the same as in a run with that pattern
+  alone; `--dedup` works for each pattern.  Hits found by two patterns
+  are both written (use `--merge` to remove them).
+* Names: the prefix of each pattern (its `Name=` label, or
+  `--name-prefix` for all), one counter for each prefix.
+* GFF3 header: `pattern=` for each file; JSON lines get a `"pattern"`
+  field (only with several files).
+* `-m` counts the hits of all patterns; `-n` counts records where no
+  pattern has a hit.
+* B. napus genome, 22 TIR patterns, `-t 20`: 648 s in one run (max
+  6.4 GB), 762 s as 22 runs (max 4.9 GB); same hits.
+
+### Checking patterns: `--lint` and `--explain`
+
+No input is read.  Several pattern files can be given.
+
+* `--explain` describes each unit in plain words: source line, text,
+  meaning (mismatches, IUPAC codes, names, gaps, labels), the hit length
+  range, and how the search goes.
+* `--lint` reports traps as `file:line: error|warning|note: text` and a
+  count.  Exit status 1 when there is an error, else 0.  Give it the
+  options of the real run (`-p`, `-c`, `--dedup`, `-o`), as some checks
+  depend on them.
+  - errors: the pattern does not parse (where, and why), a name defined
+    twice, an undefined name or rule set, a name that refers to itself,
+    a longest match of 0 letters, bad `%@` labels;
+  - warnings: a reversed range `10...3` (only length 10 is matched), a
+    name used before it is defined or defined in one branch of `( | )`,
+    text cut at 31 999 bytes, mismatches >= word length, `-o -c` (`-c`
+    becomes the value of `-o`), `-c` without `--dedup` for a pattern that
+    reads the same on both strands (every element found twice);
+  - notes: a wide gap that cannot skip gap lengths (slow), `<pN` (reverse,
+    not reverse complement), `pN=a...b` uses the shortest length that
+    works, alternative order, inserts and deletes together, weight units
+    score `N` as an average, unused names, patterns that do not split for
+    threads.
+
+```
+$ scan_for_matches --lint -c tir_scan_patterns/labelled/00_DTC_published_2025.pat
+tir_scan_patterns/labelled/00_DTC_published_2025.pat: warning: the pattern reads the same on both strands: with -c, every element is found twice; use --dedup with --format
+0 errors, 1 warnings, 0 notes
+```
+
+### Merging several runs: `--merge`
+
+```
+scan_for_matches --merge [--overlap F] [--name-prefix P] [--name-start N] \
+                 [--output FILE] FILE.gff3 [FILE2.gff3 ...]
+```
+
+`--merge` joins the GFF3 files of several patterns or runs into one file with
+genome-wide unique Names. The files are in priority order (`-` is stdin; gzip
+and bgzip are detected). Any GFF3 with `ID`/`Parent` works.
+
+- An *element* is a top feature (no `Parent`) and all its descendants. IDs are
+  local to each input file, so two runs can both have `DTC1`.
+- Two elements are the *same* when seqid, start and end of the top feature are
+  equal (strand is ignored). With `--overlap F` (0 < F <= 1) they are also the
+  same when they overlap by at least F of the length of *each* one.
+- The element of the earlier file (then the earlier line) is kept. The kept top
+  feature gets `Merged=<file>:<old Name>` for each dropped element.
+- Output order: seqid in natural order (`chr2` before `chr10`), then start
+  ascending, end descending, then input order.
+- New Names are prefix + counter (`DTC1`, `DTC2`, ...), counted in output order.
+  The prefix is `--name-prefix`, or the old Name without trailing digits
+  (`DTH_98` gives `DTH_`; `sfm` if nothing is left). `--name-start` sets the
+  first number (default 1). `ID`, `Parent` and `Name` are renamed in all lines
+  of an element; all other columns and attributes are copied as they are.
+- An ID must be unique in one file (lines of one feature with the same
+  ID and Parent are allowed).  To merge several runs, give the files one
+  by one; files joined with `cat` repeat IDs and give an error.
+- A summary goes to stderr: `merge: N elements read, N duplicates removed, N written`.
+- Exit status: 0 ok, 1 bad input (`merge: FILE:LINE: message`), 2 bad options.
+
+```
+scan_for_matches -c --dedup --format gff3 00_DTC_published_2025.pat < genome.fa > a.gff3
+scan_for_matches -c --dedup --format gff3 09_DTC_CACTA_seed10.pat   < genome.fa > b.gff3
+scan_for_matches --merge --overlap 0.9 a.gff3 b.gff3 --output all.gff3
+```
+
+The output of one run with several pattern files can be merged too (one
+input file): elements found by two patterns are then removed.
+
+### JASPAR matrix to weight unit (`tools/jaspar2sfm.py`)
+
+`tools/jaspar2sfm.py` turns a JASPAR position frequency matrix into a weight
+unit `{(a,c,g,t),...} > CUTOFF` for a pattern file.  Python 3 standard library only.
+
+```
+python3 -I tools/jaspar2sfm.py MA0549.1.jaspar --pvalue 1e-4 > bzr2.pat
+python3 -I tools/jaspar2sfm.py MA0549.1.jaspar --revcomp >> bzr2.pat   # other strand
+```
+
+* Input: JASPAR text (`>ID NAME` and four rows `A [ ... ]`); `-` reads stdin.
+  Several matrices in one file give one block each; `--name ID_OR_NAME` keeps one.
+* Weights: `round(scale * log2(freq / background))`, `--scale 100`; the
+  frequency uses `--pseudocount 0.25` (spread by the background);
+  `--background A,C,G,T` defaults to equal.
+* Cutoff: the smallest integer T with `P(score > T) <= --pvalue` under the
+  background, by an exact DP over the integer scores (the engine tests `score > T`).
+  The `%` comment lines show the exact p-value of T and the maximum score.
+* `--revcomp` converts the matrix of the opposite strand (reverse columns, A<->T, C<->G).
+  Use it instead of `-c` when the unit is part of a longer pattern.
+* Limits: no score is printed, the first window above T is reported; N and IUPAC
+  letters score as averages of the weights; the pattern file is cut at 31 999
+  characters (a warning goes to stderr above 30 000).  Exit status 1 on bad input.
+* Check: MA0549.1 at p = 1e-4 gave 101 random hits per 1 Mb (100 expected).
+  Tests: `python3 -I -m unittest discover -s tools`.
+
+### Example
 
 Example (from the original README):
 
@@ -233,6 +367,15 @@ cargo test --release
   with `-m`, label errors, and JSON lines whose unit coordinates, read
   back from the FASTA on both strands, give the printed text (with
   alternatives `( | )` and zero-width units).
+* `tests/multi.rs` – several pattern files: the hits of each pattern
+  equal the single runs, for `-t 1/4` and many piece sizes; Names,
+  header, `-m`, errors.
+* `tests/lint_cli.rs` and unit tests in `src/lint.rs` – `--lint` /
+  `--explain`; the lint parser accepts exactly the patterns the engine
+  accepts, with the same units (about 4 900 patterns, 4 000 of them
+  random).
+* `tests/merge.rs` and unit tests in `src/merge.rs` – `--merge`.
+* `tools/test_jaspar2sfm.py` – `python3 -I -m unittest discover -s tools`.
 * `tests/fuzz_skip.py OLD NEW N SEED` – compares a build without gap
   skipping (for example 0.1.0) with a new one on random patterns with
   wide ranges followed by words, reverse complements and repeats.
@@ -302,6 +445,9 @@ speed, so more than 4 threads gains little on this machine.
 * `src/main.rs` – port of `scan_for_matches.c` (options, FASTA, output)
 * `src/engine.rs` – port of `ggpunit.c` (pattern parser and matcher)
 * `src/fmt.rs` – `--format` output and the `%@` labels
+* `src/lint.rs` – `--lint` and `--explain`
+* `src/merge.rs` – `--merge`
+* `tools/jaspar2sfm.py` – JASPAR matrix → weight unit
 * `src/gz.rs` – gzip / bgzip input (system zlib; bgzip blocks in threads)
 * `src/sys.rs` – the few C library calls used (`getopt`, `sscanf`, stdio
   output, signals, `mmap`)

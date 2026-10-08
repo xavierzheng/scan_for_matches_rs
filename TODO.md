@@ -2,15 +2,16 @@
 
 ## Later
 
-- [ ] `--lint` and `--explain` for patterns (see group C for traps).
-- [ ] Merge tool: several patterns/runs → genome-wide unique Names
-      (join GFF3 of several runs, remove elements found twice, number
-      again).
+- [x] `--lint` and `--explain` for patterns (0.4.0).
+- [x] Merge tool: several patterns/runs → genome-wide unique Names
+      (`--merge`, 0.4.0).
 - [ ] `--format`: a hit of length 0 is written only in JSON lines (GFF3
       and BED have no place for it).
-- [ ] Several patterns in one run (read the genome once).
-- [ ] Converter JASPAR matrix → integer weight unit with a p-value
-      cutoff (the weight unit already works for PWMs; no engine change).
+- [x] Several patterns in one run (read the genome once) (0.4.0).
+- [x] Converter JASPAR matrix → integer weight unit with a p-value
+      cutoff (`tools/jaspar2sfm.py`, 0.4.0).
+- [ ] A pattern-writing skill for small models (JSON slot spec → pattern)
+      and `--synth` test sequences.
 
 ## Platforms
 

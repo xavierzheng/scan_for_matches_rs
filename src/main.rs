@@ -9,6 +9,8 @@
 mod engine;
 mod fmt;
 mod gz;
+mod lint;
+mod merge;
 mod sys;
 
 use engine::{Buf, DNA, Engine, PEPTIDE, SharedIndex, compl};
@@ -282,6 +284,8 @@ struct Printer<S: Sink> {
     line: Vec<u8>,
     /// raw records for `--format` instead of the C output
     raw: bool,
+    /// index of the pattern file (several patterns)
+    pat: usize,
 }
 
 impl<S: Sink> Printer<S> {
@@ -432,6 +436,7 @@ fn print_hit<S: Sink>(
         pr.line.clear();
         fmt::encode(
             &mut pr.line,
+            pr.pat,
             rev,
             ln,
             id,
@@ -536,9 +541,14 @@ fn read_error(msg: &[u8]) -> ! {
     std::process::exit(1);
 }
 
-/// One thread: records are read, searched and printed one after the other.
+/// Several patterns: after searching a record at least this long, an
+/// engine gives the memory of the record back.
+const RELEASE_LEN: usize = 1 << 22;
+
+/// One thread: records are read, searched (by each pattern in turn) and
+/// printed one after the other.
 fn run_sequential(
-    mut eng: Engine,
+    mut engs: Vec<Engine>,
     out: Writer,
     input: Option<std::fs::File>,
     opts: Opts,
@@ -552,8 +562,12 @@ fn run_sequential(
         out,
         line: Vec::new(),
         raw: opts.raw,
+        pat: 0,
     };
-    eng.set_track_units(opts.raw);
+    for eng in &mut engs {
+        eng.set_track_units(opts.raw);
+    }
+    let several = engs.len() > 1;
     let mut rd = FastaReader::new(fasta_source(input, opts.threads));
     while max_hits > 0 {
         match rd.next() {
@@ -563,16 +577,28 @@ fn run_sequential(
                 if ignore.contains(&id) {
                     continue;
                 }
-                let hit = scan_record(
-                    &mut eng,
-                    &mut data,
-                    &mut hits,
-                    &mut pr,
-                    &id,
-                    &body,
-                    opts,
-                    &mut max_hits,
-                );
+                let mut hit = false;
+                for (k, eng) in engs.iter_mut().enumerate() {
+                    if max_hits <= 0 {
+                        break;
+                    }
+                    pr.pat = k;
+                    hit |= scan_record(
+                        eng,
+                        &mut data,
+                        &mut hits,
+                        &mut pr,
+                        &id,
+                        &body,
+                        opts,
+                        &mut max_hits,
+                    );
+                    // (a pattern that reads matches of earlier records
+                    // keeps them)
+                    if several && body.len() >= RELEASE_LEN && !eng.uses_earlier_state() {
+                        eng.release_data();
+                    }
+                }
                 pr.out.end_record();
                 if !hit {
                     missed(&mut stop_after);
@@ -663,10 +689,10 @@ impl WarmStats {
     }
 }
 
-/// A long record searched in pieces; the k-mer index of each strand is
-/// built once and shared by all engines.
+/// A record.  A long record is searched in pieces; the k-mer index of
+/// each strand is built once and shared by all engines (and patterns).
 struct LongRec {
-    /// unique for each long record
+    /// unique for each record
     serial: usize,
     id: Vec<u8>,
     body: Vec<u8>,
@@ -674,22 +700,34 @@ struct LongRec {
     index: [SharedIndex; 2],
 }
 
-/// Work for one worker.
+/// Work for one worker.  The jobs of a record come one after the other:
+/// pattern by pattern, and for each pattern strand by strand.
 enum Job {
-    /// a whole record: id, body
-    Whole(Vec<u8>, Vec<u8>),
+    /// a whole record, searched by the patterns `pats` in turn
+    Whole(WholeJob),
     Piece(PieceJob),
 }
 
-/// Hits starting at `from..=last` of one strand of a long record.
+struct WholeJob {
+    rec: std::sync::Arc<LongRec>,
+    pats: Vec<usize>,
+    /// the first / last job of the record
+    first_of_record: bool,
+    end_of_record: bool,
+}
+
+/// Hits of pattern `pat` starting at `from..=last` of one strand of a
+/// long record.
 struct PieceJob {
     rec: std::sync::Arc<LongRec>,
+    pat: usize,
     rev: bool,
     from: usize,
     last: usize,
-    /// the first piece of its strand
+    /// the first piece of its strand (for this pattern)
     first: bool,
-    /// the last piece of the record (both strands)
+    /// the first / last job of the record
+    first_of_record: bool,
     end_of_record: bool,
 }
 
@@ -708,7 +746,8 @@ struct PieceHits {
 
 /// What a worker or the reader sends to the writer, in input order.
 enum Done {
-    Hits(HitBuf),
+    /// the hits of a whole job; first and last job of the record
+    Hits(HitBuf, bool, bool),
     Piece(PieceJob, PieceHits),
     Error(Vec<u8>),
     End,
@@ -726,14 +765,17 @@ struct PieceEngine {
     last_hit_nonempty: bool,
     /// `--format`: raw records
     raw: bool,
+    /// index of the pattern file
+    pat: usize,
 }
 
 impl PieceEngine {
-    fn new(mut eng: Engine, raw: bool, threads: usize) -> PieceEngine {
+    fn new(mut eng: Engine, raw: bool, threads: usize, pat: usize) -> PieceEngine {
         eng.set_track_units(raw);
         eng.set_index_threads(threads);
         PieceEngine {
             raw,
+            pat,
             eng,
             data: Buf::new(),
             hits: vec![0; 2000],
@@ -765,6 +807,14 @@ impl PieceEngine {
         }
     }
 
+    /// Give the memory of the record back (several patterns: each thread
+    /// holds a long record in one engine at a time).
+    fn release(&mut self) {
+        self.unload();
+        self.data = Buf::new();
+        self.eng.release_data();
+    }
+
     /// The hits of a piece: all of them (`all`, forward strand with -o),
     /// or the chain of non-overlapping hits from its first start.  With
     /// `warm` > 0 the chain starts `warm` positions before the piece (hits
@@ -777,6 +827,7 @@ impl PieceEngine {
             out: HitBuf::default(),
             line: Vec::new(),
             raw: self.raw,
+            pat: self.pat,
         };
         let (mut starts, mut pasts) = (Vec::new(), Vec::new());
         let cb = self.eng.cdata_base();
@@ -820,38 +871,40 @@ impl PieceEngine {
 }
 
 /// Several threads: a reader thread, `threads` workers that each search
-/// whole records, or pieces of long records, with their own engine, and
-/// this thread, which prints the results in input order.  Hit limit
-/// (`-m`) and miss limit (`-n`) are applied in input order, so the output
-/// equals the one-thread output.
+/// whole records, or pieces of long records, with their own engines (one
+/// for each pattern), and this thread, which prints the results in input
+/// order.  Hit limit (`-m`) and miss limit (`-n`) are applied in input
+/// order, so the output equals the one-thread output.
 #[allow(clippy::too_many_arguments)]
 fn run_threads(
     mut out: Writer,
     input: Option<std::fs::File>,
     threads: usize,
-    line: Vec<u8>,
+    lines: Vec<Vec<u8>>,
     seq_type: i32,
     opts: Opts,
-    split: bool,
+    split: Vec<bool>,
     ignore: std::collections::HashSet<Vec<u8>>,
     mut max_hits: i32,
     mut stop_after: i32,
 ) {
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
+    let n_pats = lines.len();
     let (job_tx, job_rx) = mpsc::sync_channel::<(usize, Job)>(2 * threads);
     let job_rx = Arc::new(Mutex::new(job_rx));
     let (done_tx, done_rx) = mpsc::channel::<(usize, Done)>();
-    let split = split && !opts.protein;
+    let split: Vec<bool> = split.iter().map(|&s| s && !opts.protein).collect();
     let base_piece = piece_size();
-    let warm = Arc::new(Warm::new());
-    let mut wstats = WarmStats::default();
+    let warm: Arc<Vec<Warm>> = Arc::new((0..n_pats).map(|_| Warm::new()).collect());
+    let mut wstats: Vec<WarmStats> = (0..n_pats).map(|_| WarmStats::default()).collect();
 
     let tx = done_tx.clone();
     let rwarm = Arc::clone(&warm);
     std::thread::spawn(move || {
         let mut rd = FastaReader::new(fasta_source(input, opts.threads));
         let mut k = 0usize;
+        let mut serial = 0usize;
         loop {
             match rd.next() {
                 ReadItem::Record { id, body } => {
@@ -859,48 +912,20 @@ fn run_threads(
                         continue;
                     }
                     let ln = body.iter().position(|&b| b == 0).unwrap_or(body.len());
-                    let piece = rwarm.piece(base_piece);
-                    if !split || ln < 2 * piece {
-                        if job_tx.send((k, Job::Whole(id, body))).is_err() {
-                            return;
-                        }
-                        k += 1;
-                        continue;
-                    }
                     let rec = Arc::new(LongRec {
-                        serial: k,
+                        serial,
                         id,
                         body,
                         ln,
                         index: Default::default(),
                     });
-                    let strands: &[bool] = if opts.complements {
-                        &[false, true]
-                    } else {
-                        &[false]
-                    };
-                    for &rev in strands {
-                        let mut from = 0;
-                        while from <= ln {
-                            // a hit of length 0 can start just past the end
-                            let mut last = from + piece - 1;
-                            if last + 1 >= ln {
-                                last = ln;
-                            }
-                            let job = PieceJob {
-                                rec: Arc::clone(&rec),
-                                rev,
-                                from,
-                                last,
-                                first: from == 0,
-                                end_of_record: last == ln && rev == opts.complements,
-                            };
-                            if job_tx.send((k, Job::Piece(job))).is_err() {
-                                return;
-                            }
-                            k += 1;
-                            from = last + 1;
+                    serial += 1;
+                    let jobs = record_jobs(&rec, &split, &rwarm, base_piece, opts.complements);
+                    for job in jobs {
+                        if job_tx.send((k, job)).is_err() {
+                            return;
                         }
+                        k += 1;
                     }
                 }
                 ReadItem::Error(msg) => {
@@ -915,46 +940,72 @@ fn run_threads(
         }
     });
 
-    let line = Arc::new(line);
+    let lines = Arc::new(lines);
+    let new_engines = move |lines: &[Vec<u8>]| -> Vec<PieceEngine> {
+        lines
+            .iter()
+            .enumerate()
+            .map(|(k, line)| {
+                let mut eng = Engine::new();
+                eng.parse_cmd(line, seq_type);
+                PieceEngine::new(eng, opts.raw, opts.threads, k)
+            })
+            .collect()
+    };
     for _ in 0..threads {
         let rx = Arc::clone(&job_rx);
         let tx = done_tx.clone();
-        let line = Arc::clone(&line);
+        let lines = Arc::clone(&lines);
         let warm = Arc::clone(&warm);
         std::thread::Builder::new()
             .stack_size(1 << 30) // the parser recurses as deeply as the C code
             .spawn(move || {
-                let mut eng = Engine::new();
-                eng.parse_cmd(&line, seq_type);
-                let mut pe = PieceEngine::new(eng, opts.raw, opts.threads);
+                let mut pes = new_engines(&lines);
+                // the engine that holds a long record (several patterns)
+                let mut held: Option<usize> = None;
                 let mut data = Buf::new();
                 let mut hits: Vec<i64> = vec![0; 2000];
                 loop {
                     let job = rx.lock().unwrap().recv();
                     let Ok((k, job)) = job else { return };
                     let done = match job {
-                        Job::Whole(id, body) => {
-                            pe.unload();
+                        Job::Whole(w) => {
                             let mut pr = Printer {
                                 out: HitBuf::default(),
                                 line: Vec::new(),
                                 raw: opts.raw,
+                                pat: 0,
                             };
-                            let mut unlimited = i32::MAX;
-                            scan_record(
-                                &mut pe.eng,
-                                &mut data,
-                                &mut hits,
-                                &mut pr,
-                                &id,
-                                &body,
-                                opts,
-                                &mut unlimited,
-                            );
-                            Done::Hits(pr.out)
+                            for &p in &w.pats {
+                                let pe = &mut pes[p];
+                                pe.unload();
+                                pr.pat = p;
+                                let mut unlimited = i32::MAX;
+                                scan_record(
+                                    &mut pe.eng,
+                                    &mut data,
+                                    &mut hits,
+                                    &mut pr,
+                                    &w.rec.id,
+                                    &w.rec.body,
+                                    opts,
+                                    &mut unlimited,
+                                );
+                                if n_pats > 1 && w.rec.ln >= RELEASE_LEN {
+                                    pe.release();
+                                }
+                            }
+                            Done::Hits(pr.out, w.first_of_record, w.end_of_record)
                         }
                         Job::Piece(job) => {
-                            let ph = pe.search(&job, opts.show_overlaps && !job.rev, warm.get());
+                            if let Some(h) = held.filter(|&h| h != job.pat) {
+                                pes[h].release();
+                            }
+                            if n_pats > 1 {
+                                held = Some(job.pat);
+                            }
+                            let all = opts.show_overlaps && !job.rev;
+                            let ph = pes[job.pat].search(&job, all, warm[job.pat].get());
                             Done::Piece(job, ph)
                         }
                     };
@@ -970,14 +1021,17 @@ fn run_threads(
     let mut waiting = std::collections::BTreeMap::new();
     let mut next = 0usize;
     // a long record: end of the last hit printed on this strand, and
-    // whether the record has a hit; an engine for searching again
+    // whether the record has a hit; engines for searching again (one for
+    // each pattern, made when needed)
     let mut past = 0i64;
     let mut rec_hit = false;
-    let mut weng: Option<PieceEngine> = None;
+    let mut weng: Vec<Option<PieceEngine>> = (0..n_pats).map(|_| None).collect();
+    let mut wheld: Option<usize> = None;
     let mut wpr = Printer {
         out: HitBuf::default(),
         line: Vec::new(),
         raw: opts.raw,
+        pat: 0,
     };
     while max_hits > 0 {
         let item = match waiting.remove(&next) {
@@ -991,35 +1045,44 @@ fn run_threads(
             },
         };
         next += 1;
-        match item {
+        let end_of_record = match item {
             Done::End => break,
             Done::Error(msg) => {
                 out.end_record();
                 read_error(&msg)
             }
-            Done::Hits(h) => {
-                let printed = print_hits(&mut out, &h, 0, &mut max_hits);
-                out.end_record();
-                if printed == 0 {
-                    missed(&mut stop_after);
+            Done::Hits(h, first, end) => {
+                if first {
+                    rec_hit = false;
                 }
+                rec_hit |= print_hits(&mut out, &h, 0, &mut max_hits) > 0;
+                end
             }
             Done::Piece(job, ph) => {
+                if job.first_of_record {
+                    rec_hit = false;
+                }
                 if job.first {
                     past = 0;
-                    if !job.rev {
-                        rec_hit = false;
-                    }
                 }
                 if opts.show_overlaps && !job.rev {
                     // every hit, in search order
                     rec_hit |= print_hits(&mut out, &ph.out, 0, &mut max_hits) > 0;
                 } else {
-                    let we = weng.get_or_insert_with(|| {
+                    if let Some(h) = wheld.filter(|&h| h != job.pat)
+                        && let Some(we) = weng[h].as_mut()
+                    {
+                        we.release();
+                    }
+                    if n_pats > 1 {
+                        wheld = Some(job.pat);
+                    }
+                    let we = weng[job.pat].get_or_insert_with(|| {
                         let mut e = Engine::new();
-                        e.parse_cmd(&line, seq_type);
-                        PieceEngine::new(e, opts.raw, opts.threads)
+                        e.parse_cmd(&lines[job.pat], seq_type);
+                        PieceEngine::new(e, opts.raw, opts.threads, job.pat)
                     });
+                    wpr.pat = job.pat;
                     let mut again = 0;
                     rec_hit |= join_piece(
                         &mut out,
@@ -1031,18 +1094,89 @@ fn run_threads(
                         &mut max_hits,
                         &mut again,
                     );
-                    wstats.joined(&warm, job.last + 1 - job.from, again);
+                    wstats[job.pat].joined(&warm[job.pat], job.last + 1 - job.from, again);
                 }
-                if job.end_of_record {
-                    out.end_record();
-                    if !rec_hit && max_hits > 0 {
-                        missed(&mut stop_after);
-                    }
-                }
+                job.end_of_record
+            }
+        };
+        if end_of_record {
+            out.end_record();
+            if !rec_hit && max_hits > 0 {
+                missed(&mut stop_after);
             }
         }
     }
     out.end_record();
+}
+
+/// The jobs of a record, in output order: for each pattern, the whole
+/// record (patterns next to each other that do not split share one job)
+/// or its pieces, strand by strand.
+fn record_jobs(
+    rec: &std::sync::Arc<LongRec>,
+    split: &[bool],
+    warm: &[Warm],
+    base_piece: usize,
+    complements: bool,
+) -> Vec<Job> {
+    let ln = rec.ln;
+    let mut jobs: Vec<Job> = Vec::new();
+    let mut whole: Vec<usize> = Vec::new();
+    let flush = |whole: &mut Vec<usize>, jobs: &mut Vec<Job>| {
+        if !whole.is_empty() {
+            jobs.push(Job::Whole(WholeJob {
+                rec: std::sync::Arc::clone(rec),
+                pats: std::mem::take(whole),
+                first_of_record: false,
+                end_of_record: false,
+            }));
+        }
+    };
+    for (pat, &sp) in split.iter().enumerate() {
+        let piece = warm[pat].piece(base_piece);
+        if !sp || ln < 2 * piece {
+            whole.push(pat);
+            continue;
+        }
+        flush(&mut whole, &mut jobs);
+        let strands: &[bool] = if complements {
+            &[false, true]
+        } else {
+            &[false]
+        };
+        for &rev in strands {
+            let mut from = 0;
+            while from <= ln {
+                // a hit of length 0 can start just past the end
+                let mut last = from + piece - 1;
+                if last + 1 >= ln {
+                    last = ln;
+                }
+                jobs.push(Job::Piece(PieceJob {
+                    rec: std::sync::Arc::clone(rec),
+                    pat,
+                    rev,
+                    from,
+                    last,
+                    first: from == 0,
+                    first_of_record: false,
+                    end_of_record: false,
+                }));
+                from = last + 1;
+            }
+        }
+    }
+    flush(&mut whole, &mut jobs);
+    let n = jobs.len();
+    for (i, j) in jobs.iter_mut().enumerate() {
+        let (f, e) = match j {
+            Job::Whole(w) => (&mut w.first_of_record, &mut w.end_of_record),
+            Job::Piece(p) => (&mut p.first_of_record, &mut p.end_of_record),
+        };
+        *f = i == 0;
+        *e = i + 1 == n;
+    }
+    jobs
 }
 
 /// Print the hits of `h` from hit `from` on while `max_hits` allows;
@@ -1114,13 +1248,15 @@ fn join_piece(
             }
             return printed;
         }
-        // search the piece again from `past`
+        // search the piece again from `past` (from its start when `past`
+        // is before it: hits that start earlier belong to the earlier
+        // pieces, also a hit of length 0 at `past`)
         let i = if !again {
             again = true;
             again_from = (*past).max(from);
             we.load(&job.rec, job.rev);
             we.eng
-                .first_match_in(job.rec.ln as i32, *past, last, &mut we.hits)
+                .first_match_in(job.rec.ln as i32, again_from, last, &mut we.hits)
         } else {
             we.eng.cont_match(&mut we.hits)
         };
@@ -1161,6 +1297,10 @@ scan_for_matches VERSION: search DNA or protein sequences for a pattern
 usage:
   scan_for_matches [options] pattern_file < fasta_input > hits
   scan_for_matches [options] --input fasta_input --output hits pattern_file
+  scan_for_matches --format F [options] pattern_file pattern_file ... < fasta_input
+  scan_for_matches --lint [-p] [-c] [--dedup] pattern_file ...
+  scan_for_matches --explain [-p] pattern_file ...
+  scan_for_matches --merge [merge options] run1.gff3 run2.gff3 ... (--merge --help)
 
 The FASTA input can be plain text, gzip or bgzip (detected).
 
@@ -1188,6 +1328,15 @@ output formats (default: the original output):
                      else sequence_motif)
   --dedup            with -c: a reverse-strand hit with the same span as a
                      forward hit is dropped; the element gets strand .
+
+several pattern files (needs --format): the input is read once; each record
+is searched by each pattern in turn.  Names with the same prefix are numbered
+by one counter, so they stay unique.
+
+checking patterns (no input is read):
+  --lint             report traps in the pattern (errors, warnings, notes);
+                     exit status 1 when there is an error
+  --explain          describe each unit of the pattern in plain words
 
 Long options can be written --format gff3 or --format=gff3.
 Note: -i and -o are the options of the original program (ids to skip,
@@ -1275,8 +1424,126 @@ fn main() {
     let _ = t.join();
 }
 
+/// A pattern file as read: the joined line, the source line of each of
+/// its bytes, and the comments (for the `%@` labels).
+struct PatText {
+    file: Vec<u8>,
+    line: Vec<u8>,
+    src_line: Vec<u32>,
+    comments: Vec<(u32, Vec<u8>)>,
+    /// text after byte 31 999 was lost
+    truncated: bool,
+}
+
+/// Read a pattern: '%' starts a comment, newlines become spaces.
+fn read_pattern(file: Vec<u8>, f: std::fs::File) -> PatText {
+    let mut line: Vec<u8> = Vec::new();
+    let mut src_line: Vec<u32> = Vec::new();
+    let mut comments: Vec<(u32, Vec<u8>)> = Vec::new();
+    let mut fp = Input::new(f);
+    let mut n_line = 1u32;
+    let mut i = fp.getc();
+    while i != EOF && line.len() < MAX_PAT_LINE_LN - 1 {
+        if i == b'%' as i32 {
+            let mut text = Vec::new();
+            loop {
+                i = fp.getc();
+                if i == b'\n' as i32 || i == EOF {
+                    break;
+                }
+                text.push(i as u8);
+            }
+            if text.last() == Some(&b'\r') {
+                text.pop();
+            }
+            comments.push((n_line, text));
+            if i != EOF {
+                n_line += 1;
+                i = b' ' as i32;
+            }
+        } else if i == b'\n' as i32 || i == b'\r' as i32 {
+            if i == b'\n' as i32 {
+                n_line += 1;
+            }
+            i = b' ' as i32;
+        } else {
+            line.push(i as u8);
+            src_line.push(n_line);
+            i = fp.getc();
+        }
+    }
+    // text after the cut (other than spaces and comments) is lost
+    let mut truncated = false;
+    let mut in_comment = false;
+    while i != EOF {
+        if i == b'\n' as i32 {
+            in_comment = false;
+        } else if i == b'%' as i32 {
+            in_comment = true;
+        } else if !in_comment && !isspace(i) {
+            truncated = true;
+            break;
+        }
+        i = fp.getc();
+    }
+    // the C string ends at the first NUL
+    if let Some(k) = line.iter().position(|&b| b == 0) {
+        line.truncate(k);
+    }
+    PatText {
+        file,
+        line,
+        src_line,
+        comments,
+        truncated,
+    }
+}
+
+/// `--lint` / `--explain` for each pattern file; exits.
+fn lint_patterns(pats: &[PatText], lint: bool, ro: &lint::RunOpts) -> ! {
+    let mut error = false;
+    for (k, p) in pats.iter().enumerate() {
+        let mut eng = Engine::new();
+        let parsed = eng.parse_cmd(&p.line, if ro.protein { PEPTIDE } else { DNA }) != 0;
+        let facts = lint::Facts {
+            parsed,
+            uses_earlier_state: parsed && eng.uses_earlier_state(),
+            can_split: parsed && eng.can_split(),
+            units: if parsed {
+                eng.unit_offsets()
+            } else {
+                Vec::new()
+            },
+        };
+        let src = lint::Source {
+            file: &p.file,
+            line: &p.line,
+            src_line: &p.src_line,
+            comments: &p.comments,
+            truncated: p.truncated,
+        };
+        let (text, err) = if lint {
+            lint::lint(&src, &facts, ro)
+        } else {
+            lint::explain(&src, &facts, ro)
+        };
+        if k > 0 {
+            println!();
+        }
+        print!("{text}");
+        error |= err;
+    }
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(error as i32);
+}
+
 fn real_main() {
     let mut args = sys::Args::from_env();
+    if args.argc() > 1 && args.get(1) == b"--merge" {
+        let rest: Vec<Vec<u8>> = (2..args.argc() as usize).map(|i| args.get(i)).collect();
+        std::process::exit(merge::main(&rest));
+    }
     // long options (output formats); the C options are read by getopt
     let long = args
         .take_long(
@@ -1288,7 +1555,7 @@ fn real_main() {
                 "input",
                 "output",
             ],
-            &["dedup", "help"],
+            &["dedup", "help", "lint", "explain"],
         )
         .unwrap_or_else(|e| long_error(&e));
     // -h only as an option of its own, not as the value of an option
@@ -1308,14 +1575,14 @@ fn real_main() {
         name_start: 1,
         typ: None,
         dedup: false,
-        pattern: Vec::new(),
     };
     let mut format = None;
     let mut input_path: Option<Vec<u8>> = None;
     let mut output_path: Option<Vec<u8>> = None;
     let mut fmt_opts = 0;
+    let (mut do_lint, mut do_explain) = (false, false);
     for (name, v) in &long {
-        if !matches!(name.as_str(), "input" | "output") {
+        if !matches!(name.as_str(), "input" | "output" | "lint" | "explain") {
             fmt_opts += 1;
         }
         match name.as_str() {
@@ -1335,16 +1602,23 @@ fn real_main() {
                     .unwrap_or_else(|| long_error("--name-start needs a number"))
             }
             "type" => fopts.typ = Some(v.clone()),
+            "lint" => do_lint = true,
+            "explain" => do_explain = true,
             _ => fopts.dedup = true,
         }
     }
-    if format.is_none() && fmt_opts > 0 {
+    if do_lint && do_explain {
+        long_error("use --lint or --explain, not both");
+    }
+    let checking = do_lint || do_explain;
+    if format.is_none() && fmt_opts > 0 && !checking {
         long_error("--dedup, --name-prefix, --name-start and --type need --format");
     }
 
     let mut stop_after: i32 = 100_000_000;
     let mut max_hits: i32 = 100_000_000;
     let mut show_overlaps = false;
+    let mut o_value: Option<Vec<u8>> = None;
     let mut complements = false;
     let mut protein = false;
     let mut errflag: i32 = 0;
@@ -1357,7 +1631,10 @@ fn real_main() {
             break;
         }
         match c as u8 {
-            b'o' => show_overlaps = true,
+            b'o' => {
+                show_overlaps = true;
+                o_value = sys::optarg_bytes();
+            }
             b'c' => complements = true,
             b'p' => protein = true,
             b'n' => {
@@ -1402,11 +1679,39 @@ fn real_main() {
         eprintln!("-c (complementary strand) cannot be used with -p (protein sequences)");
         usage(errflag, optind, argc);
     }
-    fopts.pattern = args.get(optind as usize);
-    let pat_file = match open_path(&fopts.pattern) {
-        Some(f) => f,
-        None => usage(errflag, optind, argc),
-    };
+    // one or more pattern files
+    let pat_files: Vec<(Vec<u8>, std::fs::File)> = (optind as usize..argc as usize)
+        .map(|i| {
+            let name = args.get(i);
+            match open_path(&name) {
+                Some(f) => (name, f),
+                None if optind as usize + 1 == argc as usize => usage(errflag, optind, argc),
+                None => long_error(&format!(
+                    "cannot open pattern file {}",
+                    String::from_utf8_lossy(&name)
+                )),
+            }
+        })
+        .collect();
+    let several = pat_files.len() > 1;
+    if several && format.is_none() && !checking {
+        long_error("several pattern files need --format");
+    }
+    let pats: Vec<PatText> = pat_files
+        .into_iter()
+        .map(|(name, f)| read_pattern(name, f))
+        .collect();
+
+    if checking {
+        let ro = lint::RunOpts {
+            protein,
+            complements,
+            dedup: fopts.dedup,
+            format: format.is_some(),
+            o_value,
+        };
+        lint_patterns(&pats, do_lint, &ro);
+    }
 
     // ids to ignore
     let mut ignore: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
@@ -1423,71 +1728,55 @@ fn real_main() {
         }
     }
 
-    // read the pattern: '%' starts a comment, newlines become spaces.
-    // For --format: the source line of each byte, and the comments.
-    let mut line: Vec<u8> = Vec::new();
-    let mut src_line: Vec<u32> = Vec::new();
-    let mut comments: Vec<(u32, Vec<u8>)> = Vec::new();
-    {
-        let mut fp = Input::new(pat_file);
-        let mut n_line = 1u32;
-        let mut i = fp.getc();
-        while i != EOF && line.len() < MAX_PAT_LINE_LN - 1 {
-            if i == b'%' as i32 {
-                let mut text = Vec::new();
-                loop {
-                    i = fp.getc();
-                    if i == b'\n' as i32 || i == EOF {
-                        break;
-                    }
-                    text.push(i as u8);
-                }
-                if text.last() == Some(&b'\r') {
-                    text.pop();
-                }
-                comments.push((n_line, text));
-                if i != EOF {
-                    n_line += 1;
-                    i = b' ' as i32;
-                }
-            } else if i == b'\n' as i32 || i == b'\r' as i32 {
-                if i == b'\n' as i32 {
-                    n_line += 1;
-                }
-                i = b' ' as i32;
-            } else {
-                line.push(i as u8);
-                src_line.push(n_line);
-                i = fp.getc();
+    let seq_type = if protein { PEPTIDE } else { DNA };
+    let mut engs: Vec<Engine> = Vec::new();
+    for p in &pats {
+        let mut eng = Engine::new();
+        let rc = eng.parse_cmd(&p.line, seq_type);
+        if rc == 0 {
+            let mut msg = b"failed to parse pattern: ".to_vec();
+            if several {
+                msg.extend_from_slice(&p.file);
+                msg.extend_from_slice(b": ");
             }
+            msg.extend_from_slice(&p.line);
+            msg.push(b'\n');
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&msg);
+            std::process::exit(1);
         }
-    }
-    // the C string ends at the first NUL
-    if let Some(k) = line.iter().position(|&b| b == 0) {
-        line.truncate(k);
-    }
-
-    let mut eng = Engine::new();
-    let rc = eng.parse_cmd(&line, if protein { PEPTIDE } else { DNA });
-    if rc == 0 {
-        let mut msg = b"failed to parse pattern: ".to_vec();
-        msg.extend_from_slice(&line);
-        msg.push(b'\n');
-        use std::io::Write;
-        let _ = std::io::stderr().write_all(&msg);
-        std::process::exit(1);
+        engs.push(eng);
     }
 
     let formatter = format.map(|f| {
         fopts.format = f;
-        let lb = fmt::parse_labels(&comments).unwrap_or_else(|e| long_error(&e));
-        let units: Vec<(u32, u32)> = eng
-            .unit_offsets()
-            .into_iter()
-            .map(|(slot, off)| (slot, src_line.get(off).copied().unwrap_or(0)))
+        let labels = pats
+            .iter()
+            .zip(&engs)
+            .map(|(p, eng)| {
+                let err = |e: String| -> ! {
+                    if several {
+                        long_error(&format!("{}: {e}", String::from_utf8_lossy(&p.file)))
+                    } else {
+                        long_error(&e)
+                    }
+                };
+                let lb = fmt::parse_labels(&p.comments).unwrap_or_else(|e| err(e));
+                let units: Vec<(u32, u32)> = eng
+                    .unit_offsets()
+                    .into_iter()
+                    .map(|(slot, off)| (slot, p.src_line.get(off).copied().unwrap_or(0)))
+                    .collect();
+                let (group, line) = lb.assign(&units).unwrap_or_else(|e| err(e));
+                fmt::PatLabels {
+                    file: p.file.clone(),
+                    lb,
+                    group,
+                    line,
+                }
+            })
             .collect();
-        let (group, lines) = lb.assign(&units).unwrap_or_else(|e| long_error(&e));
-        fmt::Formatter::new(fopts, lb, group, lines)
+        fmt::Formatter::new(fopts, labels)
     });
     let opts = Opts {
         protein,
@@ -1515,14 +1804,14 @@ fn real_main() {
     }
     let out = Writer::new(formatter);
     // patterns that use matches of earlier sequences stay on one thread
-    if threads > 1 && !eng.uses_earlier_state() && max_hits > 0 {
-        let split = eng.can_split();
+    if threads > 1 && !engs.iter().any(|e| e.uses_earlier_state()) && max_hits > 0 {
+        let split = engs.iter().map(|e| e.can_split()).collect();
         run_threads(
             out,
             input,
             threads,
-            line,
-            if protein { PEPTIDE } else { DNA },
+            pats.into_iter().map(|p| p.line).collect(),
+            seq_type,
             opts,
             split,
             ignore,
@@ -1530,6 +1819,6 @@ fn real_main() {
             stop_after,
         );
     } else {
-        run_sequential(eng, out, input, opts, &ignore, max_hits, stop_after);
+        run_sequential(engs, out, input, opts, &ignore, max_hits, stop_after);
     }
 }

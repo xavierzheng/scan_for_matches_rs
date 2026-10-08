@@ -6,7 +6,7 @@
 //! are the same for every `-t`.
 
 use crate::engine::{Buf, compl};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Format {
@@ -217,11 +217,12 @@ fn put_u64(b: &mut Vec<u8>, v: u64) {
     b.extend_from_slice(&v.to_le_bytes());
 }
 
-/// Encode a hit: strand, record length, id, and for each entry its unit
-/// slot, start (offset on the strand searched), length and text.
+/// Encode a hit: pattern, strand, record length, id, and for each entry
+/// its unit slot, start (offset on the strand searched), length and text.
 #[allow(clippy::too_many_arguments)]
 pub fn encode(
     b: &mut Vec<u8>,
+    pat: usize,
     rev: bool,
     ln: usize,
     id: &[u8],
@@ -231,6 +232,7 @@ pub fn encode(
     data: &Buf,
     cb: i64,
 ) {
+    put_u64(b, pat as u64);
     b.push(rev as u8);
     put_u64(b, ln as u64);
     put_u64(b, id.len() as u64);
@@ -260,6 +262,8 @@ struct Unit {
 }
 
 struct Hit {
+    /// index of the pattern file
+    pat: usize,
     rev: bool,
     ln: i64,
     id: Vec<u8>,
@@ -294,8 +298,9 @@ fn fwd(rev: bool, ln: i64, s0: i64, len: i64) -> (i64, i64) {
 }
 
 fn decode(raw: &[u8]) -> Hit {
-    let rev = raw[0] != 0;
-    let mut r = Rd(&raw[1..]);
+    let pat = u64::from_le_bytes(raw[..8].try_into().unwrap()) as usize;
+    let rev = raw[8] != 0;
+    let mut r = Rd(&raw[9..]);
     let ln = r.u64() as i64;
     let idl = r.u64() as usize;
     let id = r.bytes(idl);
@@ -317,6 +322,7 @@ fn decode(raw: &[u8]) -> Hit {
         });
     }
     Hit {
+        pat,
         rev,
         ln,
         id,
@@ -335,25 +341,35 @@ pub struct Options {
     pub name_start: u64,
     pub typ: Option<Vec<u8>>,
     pub dedup: bool,
+}
+
+/// The labels of one pattern file.
+pub struct PatLabels {
     /// pattern file name, for the GFF3 header (not the whole command
     /// line: the output must not depend on `-t`)
-    pub pattern: Vec<u8>,
+    pub file: Vec<u8>,
+    pub lb: Labels,
+    /// part label of each unit slot (u32::MAX: none)
+    pub group: Vec<u32>,
+    /// source line of each unit slot
+    pub line: Vec<u32>,
 }
 
 pub struct Formatter {
     o: Options,
-    lb: Labels,
-    /// part label of each unit slot (u32::MAX: none)
-    group: Vec<u32>,
-    /// source line of each unit slot
-    line: Vec<u32>,
-    next_name: u64,
+    pats: Vec<PatLabels>,
+    /// next number of each Name prefix (one counter for all patterns
+    /// with the same prefix)
+    next_name: HashMap<Vec<u8>, u64>,
+    /// several patterns: the Names given (a prefix can end in a digit,
+    /// so `X` + 11 and `X1` + 1 would be the same Name)
+    names: HashSet<Vec<u8>>,
     seen: HashSet<Vec<u8>>,
     /// --dedup: hits of the current record, forward spans, spans found
-    /// on both strands
+    /// on both strands (for each pattern)
     pending: Vec<Hit>,
-    fwd_spans: HashSet<(i64, i64)>,
-    both: HashSet<(i64, i64)>,
+    fwd_spans: HashSet<(usize, i64, i64)>,
+    both: HashSet<(usize, i64, i64)>,
 }
 
 /// One feature of a hit, before writing.
@@ -379,13 +395,12 @@ struct Part {
 }
 
 impl Formatter {
-    pub fn new(o: Options, lb: Labels, group: Vec<u32>, line: Vec<u32>) -> Formatter {
+    pub fn new(o: Options, pats: Vec<PatLabels>) -> Formatter {
         Formatter {
-            next_name: o.name_start,
+            next_name: HashMap::new(),
+            names: HashSet::new(),
             o,
-            lb,
-            group,
-            line,
+            pats,
             seen: HashSet::new(),
             pending: Vec::new(),
             fwd_spans: HashSet::new(),
@@ -398,8 +413,10 @@ impl Formatter {
         if self.o.format == Format::Gff3 {
             out.extend_from_slice(b"##gff-version 3\n# scan_for_matches ");
             out.extend_from_slice(env!("CARGO_PKG_VERSION").as_bytes());
-            out.extend_from_slice(b" pattern=");
-            out.extend_from_slice(&self.o.pattern);
+            for p in &self.pats {
+                out.extend_from_slice(b" pattern=");
+                out.extend_from_slice(&p.file);
+            }
             out.push(b'\n');
         }
     }
@@ -412,7 +429,7 @@ impl Formatter {
             self.write(&h, false, out);
             return true;
         }
-        let span = (h.start, h.end);
+        let span = (h.pat, h.start, h.end);
         if !h.rev {
             self.fwd_spans.insert(span);
         } else if self.fwd_spans.contains(&span) {
@@ -428,15 +445,15 @@ impl Formatter {
     pub fn end_record(&mut self, out: &mut Vec<u8>) {
         let pending = std::mem::take(&mut self.pending);
         for h in &pending {
-            let dot = !h.rev && self.both.contains(&(h.start, h.end));
+            let dot = !h.rev && self.both.contains(&(h.pat, h.start, h.end));
             self.write(h, dot, out);
         }
         self.fwd_spans.clear();
         self.both.clear();
     }
 
-    fn group_of(&self, slot: u32) -> Option<usize> {
-        let g = *self.group.get(slot as usize)?;
+    fn group_of(&self, pat: usize, slot: u32) -> Option<usize> {
+        let g = *self.pats[pat].group.get(slot as usize)?;
         (g != u32::MAX).then_some(g as usize)
     }
 
@@ -448,10 +465,21 @@ impl Formatter {
             .o
             .name_prefix
             .clone()
-            .or_else(|| self.lb.name.clone())
+            .or_else(|| self.pats[h.pat].lb.name.clone())
             .unwrap_or_else(|| b"sfm".to_vec());
-        name.extend_from_slice(self.next_name.to_string().as_bytes());
-        self.next_name += 1;
+        let next = self
+            .next_name
+            .entry(name.clone())
+            .or_insert(self.o.name_start);
+        let k = name.len();
+        loop {
+            name.truncate(k);
+            name.extend_from_slice(next.to_string().as_bytes());
+            *next += 1;
+            if self.pats.len() == 1 || self.names.insert(name.clone()) {
+                break;
+            }
+        }
         let strand = if dot {
             b'.'
         } else if h.rev {
@@ -466,11 +494,11 @@ impl Formatter {
         }
     }
 
-    fn elem_type(&self) -> &[u8] {
+    fn elem_type(&self, pat: usize) -> &[u8] {
         self.o
             .typ
             .as_deref()
-            .or(self.lb.element.as_ref().map(|l| &l.typ[..]))
+            .or(self.pats[pat].lb.element.as_ref().map(|l| &l.typ[..]))
             .unwrap_or(b"sequence_motif")
     }
 
@@ -483,8 +511,8 @@ impl Formatter {
             if u.end < u.start {
                 continue;
             }
-            let g = self.group_of(u.slot);
-            if g.is_none_or(|g| self.lb.parts[g].1.role != Role::Tsd) {
+            let g = self.group_of(h.pat, u.slot);
+            if g.is_none_or(|g| self.pats[h.pat].lb.parts[g].1.role != Role::Tsd) {
                 elem = Some(match elem {
                     None => (u.start, u.end),
                     Some((a, b)) => (a.min(u.start), b.max(u.end)),
@@ -525,7 +553,8 @@ impl Formatter {
             out.extend_from_slice(format!(" 1 {}\n", h.ln).as_bytes());
         }
         let (parts, elem) = self.parts(h);
-        let role = |p: &Part| self.lb.parts[p.g].1.role;
+        let lb = &self.pats[h.pat].lb;
+        let role = |p: &Part| lb.parts[p.g].1.role;
         let has_tsd = parts.iter().any(|p| role(p) == Role::Tsd);
         let id = |suffix: &[u8]| {
             let mut v = name.to_vec();
@@ -558,8 +587,8 @@ impl Formatter {
             s.extend_from_slice(&Self::fwd_text(h, &v[1].text));
             Some((key.to_vec(), s))
         };
-        let el = self.lb.element.as_ref();
-        let etyp = self.elem_type();
+        let el = lb.element.as_ref();
+        let etyp = self.elem_type(h.pat);
         let (estart, eend) = if has_tsd {
             elem.unwrap_or((0, -1))
         } else {
@@ -588,7 +617,7 @@ impl Formatter {
         let (n_tsd, n_tir) = (count(Role::Tsd), count(Role::Tir));
         let (mut k_tsd, mut k_tir, mut k_other) = (0, 0, 0);
         for p in &parts {
-            let l = &self.lb.parts[p.g].1;
+            let l = &lb.parts[p.g].1;
             let suffix = match l.role {
                 Role::Tsd => {
                     k_tsd += 1;
@@ -622,8 +651,8 @@ impl Formatter {
         if feats.len() > 1 {
             feats[1..].sort_by_key(|f| (f.start, std::cmp::Reverse(f.end)));
         }
-        let class = self.lb.class.as_deref();
-        let method = self.lb.method.as_deref().unwrap_or(b"structural");
+        let class = lb.class.as_deref();
+        let method = lb.method.as_deref().unwrap_or(b"structural");
         for f in &feats {
             esc_seqid(out, &h.id);
             out.extend_from_slice(b"\tscan_for_matches\t");
@@ -684,7 +713,8 @@ impl Formatter {
             blocks.push((h.start, h.end));
         }
         let (a, b) = (blocks[0].0, blocks[blocks.len() - 1].1);
-        let has_tsd = parts.iter().any(|p| self.lb.parts[p.g].1.role == Role::Tsd);
+        let lb = &self.pats[h.pat].lb;
+        let has_tsd = parts.iter().any(|p| lb.parts[p.g].1.role == Role::Tsd);
         let (ta, tb) = match (has_tsd, elem) {
             (false, _) => (a, b),
             (true, Some((x, y))) if x.max(a) <= y.min(b) => (x.max(a), y.min(b)),
@@ -713,15 +743,19 @@ impl Formatter {
             .as_bytes(),
         );
         json_str(out, name);
+        if self.pats.len() > 1 {
+            out.extend_from_slice(b",\"pattern\":");
+            json_str(out, &self.pats[h.pat].file);
+        }
         out.extend_from_slice(b",\"type\":");
-        json_str(out, self.elem_type());
+        json_str(out, self.elem_type(h.pat));
         out.extend_from_slice(b",\"units\":[");
         for (i, u) in h.units.iter().enumerate() {
             if i > 0 {
                 out.push(b',');
             }
             out.extend_from_slice(b"{\"line\":");
-            match self.line.get(u.slot as usize) {
+            match self.pats[h.pat].line.get(u.slot as usize) {
                 Some(l) if *l > 0 => out.extend_from_slice(l.to_string().as_bytes()),
                 _ => out.extend_from_slice(b"null"),
             }
@@ -729,9 +763,9 @@ impl Formatter {
                 format!(",\"start\":{},\"end\":{},\"text\":", u.start, u.end).as_bytes(),
             );
             json_str(out, &u.text);
-            if let Some(g) = self.group_of(u.slot) {
+            if let Some(g) = self.group_of(h.pat, u.slot) {
                 out.extend_from_slice(b",\"label\":");
-                json_str(out, &self.lb.parts[g].1.typ);
+                json_str(out, &self.pats[h.pat].lb.parts[g].1.typ);
             }
             out.push(b'}');
         }
@@ -798,7 +832,7 @@ mod tests {
             .enumerate()
             .filter_map(|(i, l)| {
                 let k = l.find('%')?;
-                Some((i as u32 + 1, l[k + 1..].as_bytes().to_vec()))
+                Some((i as u32 + 1, l.as_bytes()[k + 1..].to_vec()))
             })
             .collect();
         parse_labels(&c)

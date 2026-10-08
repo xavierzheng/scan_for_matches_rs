@@ -229,3 +229,38 @@ fn bad_thread_count() {
         assert!(String::from_utf8_lossy(&out.2).contains("invalid value on -t option"));
     }
 }
+
+/// With warm-up, the writer searched a piece again from the end of the
+/// last hit, which can be before the piece: a hit of length 0 at the last
+/// position of the earlier piece was printed twice.
+#[test]
+fn warm_up_and_empty_hits() {
+    let input = b">s0\nGGACCGaGcauaGuaAaGgcuAGcgVAGcgVuTgA\n>s1\ntGGgcgCtGGGacgtTTAAcg\n";
+    let pat = "p1=0...1 ~p1\n";
+    let dir = std::env::temp_dir().join(format!("sfm_thr_warm_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("pattern"), pat).unwrap();
+    let run = |env: &[(&str, &str)], t: &str| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_scan_for_matches"));
+        cmd.env_remove("SFM_PIECE").env_remove("SFM_WARM");
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
+            .current_dir(&dir)
+            .args(["-t", t, "-c", "pattern"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        child.wait_with_output().unwrap().stdout
+    };
+    let one = run(&[], "1");
+    for piece in ["1", "2", "3", "7"] {
+        for warm in ["0", "1", "2", "5", "1000"] {
+            let many = run(&[("SFM_PIECE", piece), ("SFM_WARM", warm)], "4");
+            assert_eq!(one, many, "piece {piece} warm {warm}");
+        }
+    }
+}

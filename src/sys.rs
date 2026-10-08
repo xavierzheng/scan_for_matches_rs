@@ -26,6 +26,7 @@ unsafe extern "C" {
         fd: c_int,
         off: i64,
     ) -> *mut c_void;
+    fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
 }
 
 const SIGSEGV: c_int = 11;
@@ -191,6 +192,15 @@ impl Out {
                 fwrite(b.as_ptr() as *const c_void, 1, b.len(), self.fp);
             }
         }
+    }
+}
+
+/// Give the pages of `len` bytes at `p` (page aligned) back to the
+/// system; they read as zero bytes when touched again.
+pub fn release_pages(p: *mut u8, len: usize) {
+    const MADV_DONTNEED: c_int = 4;
+    if len > 0 {
+        unsafe { madvise(p as *mut c_void, len, MADV_DONTNEED) };
     }
 }
 
