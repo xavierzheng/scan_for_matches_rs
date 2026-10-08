@@ -130,6 +130,44 @@
       averages of the matching weights, while all other units never
       match `N`.
 
+## Next: `--strict-n`, then release 0.4.1 (decided 2026-10-08)
+
+Problem (TODO C, PATTERNS.md mistake 12): a name that caught `N` (or
+another IUPAC code) from the data works as a wildcard when it is used
+again (`p1`, `~p1`, `<p1`), so TSDs/TIRs made of assembly gaps give
+false hits.  Same in the C program.
+
+- [ ] Option `--strict-n` (OFF by default: without it the output stays
+      byte-identical to the C program and 0.4.0).
+      Rule: a letter caught by a name that is not A, C, G, T (U) counts
+      as ONE MISMATCH at that place when the name is used again.  No
+      other threshold: the mismatches the pattern allows decide.
+
+      | pattern | letters the name caught | result |
+      |---|---|---|
+      | `p1=3...3 ... p1` (exact TSD) | `GNT` (1 N) | no match |
+      | `~p2[1,0,0]` (TIR, 1 mismatch) | 1 N, the rest right | match (uses the 1 mismatch) |
+      | `~p2[1,0,0]` | 2 N | no match |
+      | any pattern | N inside a gap (`500...15000`) | no effect |
+      | R, Y, ... (other IUPAC codes) | same as N: 1 code = 1 mismatch | |
+
+      In the engine, not a filter after the search: a hit that is found
+      and then dropped makes the search jump past its end, so a real
+      element next to it could be lost.  Also the gap-skipping paths
+      (masks from the named text, k-mer index) must follow the rule.
+- [ ] Tests: without the option, byte-identical (cargo test, fuzz_compare
+      vs C, fuzz_threads, fuzz_skip, 22-pattern md5); with it, fuzz
+      against a small separate reference implementation; maize and
+      B. napus: how many hits go away, check that they are next to N.
+- [ ] `--lint`: a note for patterns that use a name again: "add
+      --strict-n for genomes with gaps (N)".
+- [ ] Docs as clear as the table above (the user asked for this level):
+      README options, PATTERNS.md (mistake 12 + the table), TIR examples
+      and Quick start use `--strict-n`, CHANGELOG.
+- [ ] Release 0.4.1 (memory work, PATTERNS.md, license, `--explain`
+      fix, `--strict-n`): version, CHANGELOG "Unreleased" → 0.4.1,
+      README Versions (newest first), tag after CI passes.
+
 ## Documentation: pattern guide (planned 2026-10-08)
 
 - [x] `PATTERNS.md` (repo root; `docs/` is not pushed): the pattern
