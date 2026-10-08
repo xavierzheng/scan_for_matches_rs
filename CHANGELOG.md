@@ -20,6 +20,13 @@
   the threads that search its pieces) is built by N threads.  Before,
   one thread built it and the others waited.  The index is the same.
 
+B. napus genome (1.0 Gb, bgzip), 22 TIR patterns, `-c --dedup --format
+gff3 -t 20`, Intel Xeon Gold 6238R: 1546 s → 1087 s in total, outputs
+byte-identical (md5).  Short patterns about 2.5× faster (00_DTC 24.5 s
+→ 9.7 s, CPU use 28 % → 70 %); long ones about 1.5× (04_DTE 151 s →
+96 s).  Not faster: 02_DTA_short5to7 and 08_DTH_Tourist_seed8 (see
+TODO, "Speed").
+
 ## 0.3.0 — 2026-10-07
 
 Output formats.  Without the new options the output (stdout, stderr,
