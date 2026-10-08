@@ -8,8 +8,10 @@ patterns (ranges, hairpins/reverse complements with pairing rules, repeats,
 inexact matches, weight matrices, alternatives, length limits, `^`/`$`,
 `any()`/`notany()` for proteins).
 
-The pattern language is described in [`README.original`](README.original)
-(the original documentation).
+**New to the pattern language?  Start with [`PATTERNS.md`](PATTERNS.md)**:
+a guide with templates, diagrams, tested examples, common mistakes and a
+glossary.  The original documentation is
+[`README.original`](README.original).
 
 ## Quick start
 
@@ -41,7 +43,7 @@ The pattern language is described in [`README.original`](README.original)
 
   No other libraries are needed (the system zlib is used).
 
-**Use**
+**Use** (how to write patterns: [`PATTERNS.md`](PATTERNS.md))
 
 ```sh
 # a hairpin: a 4-7 bp stem, a 3-8 bp loop, the reverse complement of the stem
@@ -522,6 +524,8 @@ speed, so more than 4 threads gains little on this machine.
 * `src/main.rs` – port of `scan_for_matches.c` (options, FASTA, output)
 * `src/engine.rs` – port of `ggpunit.c` (pattern parser and matcher)
 * `src/fmt.rs` – `--format` output and the `%@` labels
+* `PATTERNS.md` – guide to the pattern language; `examples/te.fa` – its
+  test sequence
 * `src/lint.rs` – `--lint` and `--explain`
 * `src/merge.rs` – `--merge`
 * `tools/jaspar2sfm.py` – JASPAR matrix → weight unit

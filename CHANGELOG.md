@@ -15,6 +15,14 @@ Less memory with `-t N`; the output does not change.
   At most 4 x N jobs are between the reader and the writer (finished
   pieces waited in memory behind a slow one).
 
+### New
+- `PATTERNS.md`: a guide to the pattern language for biology students
+  (templates, diagrams, tested examples, common mistakes, glossary), with
+  `examples/te.fa`.  Tested: a model given only the guide wrote correct
+  patterns for 10 of 10 tasks (graded by running them).
+- `LICENSE` (BSD 3-Clause, for the new work of this port) and `NOTICE`
+  (credits to the original authors).
+
 ### Fixed
 - `--explain` / `--lint`: the 2nd and 3rd numbers of `[m,d,i]` were
   called "inserts" and "deletes"; they are deletions (a pattern letter
