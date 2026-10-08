@@ -148,6 +148,94 @@ fn base2(c: u8) -> Option<u32> {
     }
 }
 
+/// As `build_index`, with `threads` threads: each counts, then fills, the
+/// k-mers that start in its part of `seq`.  Parts are in sequence order,
+/// so every bucket is sorted as with one thread (same index).
+fn build_index_par(seq: &[u8], threads: usize) -> KIndex {
+    const MIN_PART: usize = 1 << 20;
+    let parts = threads.min(seq.len() / MIN_PART).max(1);
+    if parts == 1 {
+        return build_index(seq, None);
+    }
+    let nkeys = 1usize << (2 * KIDX_K);
+    let mask = (nkeys - 1) as u32;
+    let bounds: Vec<usize> = (0..=parts).map(|p| p * seq.len() / parts).collect();
+    // call `f(start, key)` for each k-mer of plain bases that starts in
+    // lo..hi (the k-1 bases before lo are read too)
+    let each = |lo: usize, hi: usize, f: &mut dyn FnMut(usize, u32)| {
+        let from = lo.saturating_sub(KIDX_K - 1);
+        let to = (hi + KIDX_K - 1).min(seq.len());
+        let (mut key, mut run) = (0u32, 0usize);
+        for (i, &c) in seq[from..to].iter().enumerate() {
+            match base2(c) {
+                Some(b) => {
+                    key = (key << 2 | b) & mask;
+                    run += 1;
+                }
+                None => run = 0,
+            }
+            if run >= KIDX_K {
+                let at = from + i + 1 - KIDX_K;
+                if at >= lo {
+                    f(at, key);
+                }
+            }
+        }
+    };
+    // pass 1: counts of each part
+    let counts: Vec<Vec<u32>> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..parts)
+            .map(|p| {
+                let (lo, hi) = (bounds[p], bounds[p + 1]);
+                let each = &each;
+                sc.spawn(move || {
+                    let mut c = vec![0u32; nkeys];
+                    each(lo, hi, &mut |_, k| c[k as usize] += 1);
+                    c
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    // bucket starts, and where each part writes in each bucket
+    let mut starts = vec![0u32; nkeys + 1];
+    let mut slots = vec![vec![0u32; nkeys]; parts];
+    let mut at = 0u32;
+    for k in 0..nkeys {
+        starts[k] = at;
+        for p in 0..parts {
+            slots[p][k] = at;
+            at += counts[p][k];
+        }
+    }
+    starts[nkeys] = at;
+    let mut pos = vec![0u32; at as usize];
+    // pass 2: fill (parts write to separate slots)
+    struct Ptr(*mut u32);
+    unsafe impl Send for Ptr {}
+    unsafe impl Sync for Ptr {}
+    let out = Ptr(pos.as_mut_ptr());
+    std::thread::scope(|sc| {
+        for (p, mut slot) in slots.into_iter().enumerate() {
+            let (lo, hi) = (bounds[p], bounds[p + 1]);
+            let each = &each;
+            let out = &out;
+            sc.spawn(move || {
+                each(lo, hi, &mut |x, k| {
+                    let s = &mut slot[k as usize];
+                    unsafe { *out.0.add(*s as usize) = x as u32 };
+                    *s += 1;
+                });
+            });
+        }
+    });
+    KIndex {
+        generation: 0,
+        starts,
+        pos,
+    }
+}
+
 /// Positions of every k-mer of plain bases in the coded sequence `seq`
 /// (the buffers of `reuse` are used again).
 fn build_index(seq: &[u8], reuse: Option<KIndex>) -> KIndex {
@@ -850,6 +938,8 @@ pub struct Engine {
     kidx: Option<KIndex>,
     /// used instead of `kidx` while searching a piece of a long record
     shared_kidx: Option<SharedIndex>,
+    /// threads that build a shared index
+    index_threads: usize,
     /// highest start position of a hit (the first unit, when it is not
     /// anchored); i64::MAX except while searching a piece of a record
     start_lim: i64,
@@ -921,6 +1011,7 @@ impl Engine {
             cd_gen: 0,
             kidx: None,
             shared_kidx: None,
+            index_threads: 1,
             start_lim: i64::MAX,
             masks: Vec::new(),
             mask_words: Vec::new(),
@@ -1816,6 +1907,11 @@ impl Engine {
         self.shared_kidx = idx;
     }
 
+    /// Threads that build a shared index (the other engines wait for it).
+    pub fn set_index_threads(&mut self, n: usize) {
+        self.index_threads = n.max(1);
+    }
+
     /// Mark the range units whose following unit only checks a fixed string
     /// at one position (an exact word, an exact reverse complement or an
     /// exact repeat).  Trying a gap length where that unit fails changes
@@ -2119,7 +2215,7 @@ impl Engine {
             Some(sh) => sh.get_or_init(|| {
                 let n = (er - base + 1).max(0) as usize;
                 let seq = unsafe { std::slice::from_raw_parts(self.mem.cd as *const u8, n) };
-                build_index(seq, None)
+                build_index_par(seq, self.index_threads)
             }),
             None => self.kidx.as_ref().unwrap(),
         };
@@ -3778,6 +3874,35 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_with_threads_is_the_same() {
+        // coded bases (1 2 4 8) with runs of other codes (N etc.)
+        let mut x: u64 = 12345;
+        let mut seq = Vec::new();
+        for _ in 0..(3 << 20) + 777 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            seq.push(match x % 50 {
+                0 => 15,
+                1 => 0,
+                r => [1, 2, 4, 8][(r % 4) as usize],
+            });
+        }
+        let one = build_index(&seq, None);
+        for t in [1, 2, 3, 7, 64] {
+            let par = build_index_par(&seq, t);
+            assert!(one.starts == par.starts && one.pos == par.pos, "threads {t}");
+        }
+        // a part boundary inside a run of plain bases and next to an N
+        let mut s2 = vec![1u8; 2 << 20];
+        s2[1 << 20] = 15;
+        s2[(1 << 20) + 2] = 15;
+        let one = build_index(&s2, None);
+        let par = build_index_par(&s2, 2);
+        assert!(one.starts == par.starts && one.pos == par.pos);
+    }
 
     /// The search of loose_match written as plain recursion: at each step
     /// a matching character is always taken; otherwise the choices are

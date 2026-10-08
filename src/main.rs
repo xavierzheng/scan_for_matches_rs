@@ -656,8 +656,9 @@ struct PieceEngine {
 }
 
 impl PieceEngine {
-    fn new(mut eng: Engine, raw: bool) -> PieceEngine {
+    fn new(mut eng: Engine, raw: bool, threads: usize) -> PieceEngine {
         eng.set_track_units(raw);
+        eng.set_index_threads(threads);
         PieceEngine {
             raw,
             eng,
@@ -832,7 +833,7 @@ fn run_threads(
             .spawn(move || {
                 let mut eng = Engine::new();
                 eng.parse_cmd(&line, seq_type);
-                let mut pe = PieceEngine::new(eng, opts.raw);
+                let mut pe = PieceEngine::new(eng, opts.raw, opts.threads);
                 let mut data = Buf::new();
                 let mut hits: Vec<i64> = vec![0; 2000];
                 loop {
@@ -924,7 +925,7 @@ fn run_threads(
                     let we = weng.get_or_insert_with(|| {
                         let mut e = Engine::new();
                         e.parse_cmd(&line, seq_type);
-                        PieceEngine::new(e, opts.raw)
+                        PieceEngine::new(e, opts.raw, opts.threads)
                     });
                     rec_hit |=
                         join_piece(&mut out, &job, &ph, we, &mut wpr, &mut past, &mut max_hits);

@@ -16,6 +16,9 @@
   it are read by one thread, as before.  Output is the same for good
   input.  For damaged bgzip input, the hits printed before the error can
   differ from `-t 1` (a damaged block gives no data with N > 1).
+- `-t N`: the k-mer index of a long record (one per strand, shared by
+  the threads that search its pieces) is built by N threads.  Before,
+  one thread built it and the others waited.  The index is the same.
 
 ## 0.3.0 — 2026-10-07
 
