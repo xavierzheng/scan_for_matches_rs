@@ -27,9 +27,11 @@
         Linux heap addresses differ);
       - version 0.1.0 (no undefined behaviour left): all tests pass on
         Linux x86_64 in CI; version 0.2.0 too (CI 2026-10-03);
-      - not yet compared with the C program built on Linux (its memory
-        layout, and so its undefined-behaviour results, differ from the
-        macOS build).  Normal input is expected to match.
+      - 2026-10-08, HPC rossini: compared with the C program built on
+        Linux (module scan_for_matches/20260930, gcc 9.5): `fuzz_compare
+        --compat` 2 x 10 000 cases, all the same (version 0.4.0).
+        `fuzz_skip` (0.1.0 built on the node vs 0.4.0): plain 800 and
+        `--chain` 1000, no DIFF, no NEW-timeout.
       - 2026-10-08, HPC Intel Xeon Gold 6238R (Rust 1.98): `cargo test
         --release` passes; 22 TIR patterns on the B. napus genome give
         the same output (md5) as 0.3.0 with the new threading code.
