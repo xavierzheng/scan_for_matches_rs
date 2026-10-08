@@ -17,6 +17,7 @@ unsafe extern "C" {
     fn fwrite(p: *const c_void, size: usize, n: usize, f: *mut c_void) -> usize;
     fn signal(sig: c_int, handler: usize) -> usize;
     fn raise(sig: c_int) -> c_int;
+    fn dup2(old: c_int, new: c_int) -> c_int;
     fn mmap(
         addr: *mut c_void,
         len: usize,
@@ -162,6 +163,15 @@ pub fn sscanf_optarg_int(v: &mut i32) -> c_int {
         *v = x;
         r
     }
+}
+
+/// Make `f` the process's stdout (file descriptor 1).  Call before the
+/// first `Out::new`.
+pub fn redirect_stdout(f: std::fs::File) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let ok = unsafe { dup2(f.as_raw_fd(), 1) } == 1;
+    drop(f); // fd 1 keeps the file open
+    ok
 }
 
 /// stdout as a C stdio stream, so buffering matches the original.

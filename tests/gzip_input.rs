@@ -154,3 +154,94 @@ fn damaged_gzip_gives_the_same_output_however_it_arrives() {
         );
     }
 }
+
+/// bgzip format made with the gzip command: each piece of at most
+/// `block` bytes becomes one gzip member with the "BC" extra field that
+/// gives the member size; an empty block ends the file.
+fn bgzip(data: &[u8], block: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut pieces: Vec<&[u8]> = data.chunks(block).collect();
+    pieces.push(b"");
+    for p in pieces {
+        let g = gzip(p);
+        assert_eq!(g[3], 0, "gzip header without FNAME etc.");
+        let body = &g[10..]; // deflate data, CRC32, ISIZE
+        let size = 18 + body.len();
+        assert!(size <= 65536);
+        out.extend([
+            0x1f, 0x8b, 8, 4, 0, 0, 0, 0, 0, 0xff, 6, 0, b'B', b'C', 2, 0,
+        ]);
+        out.extend(((size - 1) as u16).to_le_bytes());
+        out.extend(body);
+    }
+    out
+}
+
+#[test]
+fn bgzip_with_threads_gives_same_output() {
+    let plain = fasta();
+    let want = scan(&["-c"], PAT, &plain);
+    assert_eq!(want.0, Some(0));
+    for block in [1000, 7777, 60000] {
+        let bgz = bgzip(&plain, block);
+        for t in ["1", "2", "4"] {
+            assert_eq!(
+                want,
+                scan(&["-c", "-t", t], PAT, &bgz),
+                "block {block} -t {t}"
+            );
+        }
+        for piece in [1, 4093] {
+            assert_eq!(
+                want,
+                scan_in_pieces(&["-c", "-t", "3"], PAT, &bgz, piece * 1000),
+                "block {block} pieces"
+            );
+        }
+    }
+}
+
+#[test]
+fn bgzip_then_plain_gzip_member() {
+    let plain = fasta();
+    let cut = plain.len() / 2;
+    let mut mixed = bgzip(&plain[..cut], 5000);
+    mixed.extend(gzip(&plain[cut..]));
+    let want = scan(&["-c"], PAT, &plain);
+    for t in ["1", "4"] {
+        assert_eq!(want, scan(&["-c", "-t", t], PAT, &mixed), "-t {t}");
+    }
+}
+
+#[test]
+fn bgzip_truncated_or_damaged_is_an_error_with_threads() {
+    let bgz = bgzip(&fasta(), 5000);
+    let (code, _, err) = scan(&["-t", "4"], PAT, &bgz[..bgz.len() / 2]);
+    assert_eq!(code, Some(1));
+    assert_eq!(err, "gzip input: unexpected end of compressed data\n");
+
+    let mut bad = bgz.clone();
+    let n = bad.len();
+    for b in &mut bad[n / 2..n / 2 + 50] {
+        *b = 0x55;
+    }
+    let whole = scan(&["-c", "-t", "4"], PAT, &bad);
+    assert_eq!(whole.0, Some(1));
+    assert_eq!(whole.2, "gzip input: damaged compressed data\n");
+    assert!(!whole.1.is_empty(), "hits before the damage are printed");
+    for piece in [1000, 4093] {
+        assert_eq!(
+            whole,
+            scan_in_pieces(&["-c", "-t", "4"], PAT, &bad, piece),
+            "pieces of {piece}"
+        );
+    }
+    // a damaged CRC alone
+    let mut crc = bgz.clone();
+    let first = u16::from_le_bytes([crc[16], crc[17]]) as usize + 1;
+    crc[first - 8] ^= 1;
+    let (code, out, err) = scan(&["-t", "4"], PAT, &crc);
+    assert_eq!(code, Some(1));
+    assert!(out.is_empty());
+    assert_eq!(err, "gzip input: damaged compressed data\n");
+}

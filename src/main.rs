@@ -1,6 +1,7 @@
 //! scan_for_matches -- Rust port of the program by Ross Overbeek (ANL).
 //!
 //!   scan_for_matches [-c] [-p] [-o N] [-i ignore_file] [-t threads] pattern_file < fasta_input > hits
+//!   scan_for_matches [options] --input fasta_input --output hits pattern_file
 //!
 //! This file is the port of scan_for_matches.c (option handling, FASTA
 //! reading and hit printing).  The pattern language lives in engine.rs.
@@ -399,6 +400,8 @@ struct Opts {
     show_overlaps: bool,
     /// `--format`: raw records, unit of each hit entry tracked
     raw: bool,
+    /// `-t`: threads that decompress bgzip input (1: no extra threads)
+    threads: usize,
 }
 
 /// Turn the record in `data` (length `ln`) into its reverse complement.
@@ -537,6 +540,7 @@ fn read_error(msg: &[u8]) -> ! {
 fn run_sequential(
     mut eng: Engine,
     out: Writer,
+    input: Option<std::fs::File>,
     opts: Opts,
     ignore: &std::collections::HashSet<Vec<u8>>,
     mut max_hits: i32,
@@ -550,7 +554,7 @@ fn run_sequential(
         raw: opts.raw,
     };
     eng.set_track_units(opts.raw);
-    let mut rd = FastaReader::new(open_fasta_input(std::io::stdin().lock()));
+    let mut rd = FastaReader::new(fasta_source(input, opts.threads));
     while max_hits > 0 {
         match rd.next() {
             ReadItem::End => break,
@@ -734,6 +738,7 @@ impl PieceEngine {
 #[allow(clippy::too_many_arguments)]
 fn run_threads(
     mut out: Writer,
+    input: Option<std::fs::File>,
     threads: usize,
     line: Vec<u8>,
     seq_type: i32,
@@ -753,7 +758,7 @@ fn run_threads(
 
     let tx = done_tx.clone();
     std::thread::spawn(move || {
-        let mut rd = FastaReader::new(open_fasta_input(std::io::stdin().lock()));
+        let mut rd = FastaReader::new(fasta_source(input, opts.threads));
         let mut k = 0usize;
         loop {
             match rd.next() {
@@ -1033,6 +1038,56 @@ fn join_piece(
 }
 
 /// An error in the long options or the labels of the pattern file.
+const HELP: &str = "\
+scan_for_matches VERSION: search DNA or protein sequences for a pattern
+
+usage:
+  scan_for_matches [options] pattern_file < fasta_input > hits
+  scan_for_matches [options] --input fasta_input --output hits pattern_file
+
+The FASTA input can be plain text, gzip or bgzip (detected).
+
+options:
+  -c                 also search the opposite strand (reverse complement);
+                     not with -p
+  -p                 protein sequences
+  -n N               stop (exit status 1) after N sequences without a hit
+  -m N               report at most N hits
+  -o N               show overlapping hits (the value is not used, but it
+                     must be there)
+  -i FILE            file of sequence ids to skip
+  -t N               use N threads (default 1); the output is the same as
+                     with one thread; bgzip input is decompressed by N threads
+  --input FILE       read the FASTA input from FILE (default: stdin; -: stdin)
+  --output FILE      write the hits to FILE (default: stdout; -: stdout)
+  -h, --help         show this help and exit
+
+output formats (default: the original output):
+  --format F         gff3, bed6, bed12 or jsonl
+  --name-prefix P    Name of each hit = P + number (default: the Name= of the
+                     %@element label, else sfm)
+  --name-start N     first number (default 1)
+  --type T           column 3 of the element (default: the %@element type,
+                     else sequence_motif)
+  --dedup            with -c: a reverse-strand hit with the same span as a
+                     forward hit is dropped; the element gets strand .
+
+Long options can be written --format gff3 or --format=gff3.
+Note: -i and -o are the options of the original program (ids to skip,
+overlapping hits), not input and output.
+
+example:
+  scan_for_matches -t 8 -c --dedup --format gff3 --name-prefix DTC \\
+      --input genome.fna.gz --output DTC.gff3 DTC.pat
+
+Pattern language and labels: see README.md.
+";
+
+fn print_help() -> ! {
+    print!("{}", HELP.replace("VERSION", env!("CARGO_PKG_VERSION")));
+    std::process::exit(0);
+}
+
 fn long_error(msg: &str) -> ! {
     eprintln!("scan_for_matches: {msg}");
     std::process::exit(2);
@@ -1046,9 +1101,18 @@ fn usage(errflag: i32, optind: i32, argc: i32) -> ! {
     std::process::exit(2);
 }
 
+/// The FASTA input: the `--input` file, else stdin.
+fn fasta_source(input: Option<std::fs::File>, threads: usize) -> Box<dyn Read> {
+    match input {
+        Some(f) => open_fasta_input(std::io::BufReader::with_capacity(1 << 20, f), threads),
+        None => open_fasta_input(std::io::stdin().lock(), threads),
+    }
+}
+
 /// The FASTA input: plain text, or gzip / bgzip compressed (detected by
-/// the first two bytes).
-fn open_fasta_input<R: Read + 'static>(mut r: R) -> Box<dyn Read> {
+/// the first two bytes).  With `threads` > 1, bgzip blocks are
+/// decompressed by that many threads.
+fn open_fasta_input<R: Read + 'static>(mut r: R, threads: usize) -> Box<dyn Read> {
     let mut head = Vec::with_capacity(2);
     while head.len() < 2 {
         let mut b = [0u8; 1];
@@ -1061,8 +1125,13 @@ fn open_fasta_input<R: Read + 'static>(mut r: R) -> Box<dyn Read> {
     }
     let r = std::io::Cursor::new(head.clone()).chain(r);
     if gz::is_gzip(&head) {
-        match gz::GzReader::new(r) {
-            Ok(g) => Box::new(g),
+        let g: std::io::Result<Box<dyn Read>> = if threads > 1 {
+            gz::BgzfReader::new(r, threads).map(|g| Box::new(g) as Box<dyn Read>)
+        } else {
+            gz::GzReader::new(r).map(|g| Box::new(g) as Box<dyn Read>)
+        };
+        match g {
+            Ok(g) => g,
             Err(e) => {
                 eprintln!("{e}");
                 std::process::exit(1);
@@ -1093,8 +1162,28 @@ fn real_main() {
     let mut args = sys::Args::from_env();
     // long options (output formats); the C options are read by getopt
     let long = args
-        .take_long(&["format", "name-prefix", "name-start", "type"], &["dedup"])
+        .take_long(
+            &[
+                "format",
+                "name-prefix",
+                "name-start",
+                "type",
+                "input",
+                "output",
+            ],
+            &["dedup", "help"],
+        )
         .unwrap_or_else(|e| long_error(&e));
+    // -h only as an option of its own, not as the value of an option
+    // (the C program ignored -h)
+    let short_h = (1..args.argc() as usize).any(|i| {
+        let before = if i > 1 { args.get(i - 1) } else { Vec::new() };
+        let takes_value = matches!(before.as_slice(), b"-n" | b"-m" | b"-o" | b"-i" | b"-t");
+        args.get(i) == b"-h" && !takes_value
+    });
+    if short_h || long.iter().any(|(n, _)| n == "help") {
+        print_help();
+    }
     let argc = args.argc();
     let mut fopts = fmt::Options {
         format: fmt::Format::Gff3,
@@ -1105,8 +1194,16 @@ fn real_main() {
         pattern: Vec::new(),
     };
     let mut format = None;
+    let mut input_path: Option<Vec<u8>> = None;
+    let mut output_path: Option<Vec<u8>> = None;
+    let mut fmt_opts = 0;
     for (name, v) in &long {
+        if !matches!(name.as_str(), "input" | "output") {
+            fmt_opts += 1;
+        }
         match name.as_str() {
+            "input" => input_path = Some(v.clone()).filter(|v| v != b"-"),
+            "output" => output_path = Some(v.clone()).filter(|v| v != b"-"),
             "format" => {
                 format = Some(
                     fmt::Format::parse(v)
@@ -1124,7 +1221,7 @@ fn real_main() {
             _ => fopts.dedup = true,
         }
     }
-    if format.is_none() && !long.is_empty() {
+    if format.is_none() && fmt_opts > 0 {
         long_error("--dedup, --name-prefix, --name-start and --type need --format");
     }
 
@@ -1280,13 +1377,32 @@ fn real_main() {
         complements,
         show_overlaps,
         raw: formatter.is_some(),
+        threads,
     };
+    let input = input_path.map(|p| {
+        open_path(&p).unwrap_or_else(|| {
+            long_error(&format!(
+                "cannot open input file {}",
+                String::from_utf8_lossy(&p)
+            ))
+        })
+    });
+    if let Some(p) = output_path {
+        use std::os::unix::ffi::OsStrExt;
+        let name = String::from_utf8_lossy(&p).into_owned();
+        let f = std::fs::File::create(std::ffi::OsStr::from_bytes(&p))
+            .unwrap_or_else(|e| long_error(&format!("cannot write output file {name}: {e}")));
+        if !sys::redirect_stdout(f) {
+            long_error(&format!("cannot write output file {name}"));
+        }
+    }
     let out = Writer::new(formatter);
     // patterns that use matches of earlier sequences stay on one thread
     if threads > 1 && !eng.uses_earlier_state() && max_hits > 0 {
         let split = eng.can_split();
         run_threads(
             out,
+            input,
             threads,
             line,
             if protein { PEPTIDE } else { DNA },
@@ -1297,6 +1413,6 @@ fn real_main() {
             stop_after,
         );
     } else {
-        run_sequential(eng, out, opts, &ignore, max_hits, stop_after);
+        run_sequential(eng, out, input, opts, &ignore, max_hits, stop_after);
     }
 }

@@ -36,11 +36,14 @@ No third-party crates are used.
 
 ## Usage
 
-Same command line as the original:
+Same command line as the original, or with input and output files:
 
 ```sh
 scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] [-t N] pattern_file < fasta_input > hits
+scan_for_matches [options] --input fasta_input --output hits pattern_file
 ```
+
+`scan_for_matches --help` shows all options.
 
 | option | meaning |
 |---|---|
@@ -51,10 +54,18 @@ scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] [-t N] patter
 | `-o N` | show overlapping hits (the value is not used) |
 | `-i file` | file of sequence ids to skip |
 | `-t N` | use N threads: several records at the same time, and long records in pieces; default 1.  The output is the same as with one thread |
+| `--input FILE` | read the FASTA input from FILE instead of stdin (`-`: stdin) |
+| `--output FILE` | write the hits to FILE instead of stdout (`-`: stdout) |
+| `-h`, `--help` | show the options and exit |
+
+`-i` and `-o` keep the meaning they have in the original program (ids
+to skip, overlapping hits); input and output files are `--input` and
+`--output` only.
 
 The FASTA input on stdin can be plain text or compressed with gzip or
 bgzip (for example NCBI `*.fna.gz` files); compression is detected
-automatically:
+automatically.  With `-t N`, the blocks of a bgzip file are
+decompressed by N threads (plain gzip uses one thread):
 
 ```sh
 scan_for_matches -c pat_file < genome.fna.gz
@@ -288,6 +299,6 @@ speed, so more than 4 threads gains little on this machine.
 * `src/main.rs` – port of `scan_for_matches.c` (options, FASTA, output)
 * `src/engine.rs` – port of `ggpunit.c` (pattern parser and matcher)
 * `src/fmt.rs` – `--format` output and the `%@` labels
-* `src/gz.rs` – gzip / bgzip input (system zlib)
+* `src/gz.rs` – gzip / bgzip input (system zlib; bgzip blocks in threads)
 * `src/sys.rs` – the few C library calls used (`getopt`, `sscanf`, stdio
   output, signals, `mmap`)

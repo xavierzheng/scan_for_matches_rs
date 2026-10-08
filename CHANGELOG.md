@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### New
+- `-h` / `--help`: all options, with an example.
+- `--input FILE` and `--output FILE` (`-`: stdin / stdout).  Without them
+  the program reads stdin and writes stdout as before.  `-i` and `-o`
+  keep their original meaning.
+
+### Faster
+- bgzip input with `-t N` (N > 1): the bgzip blocks are decompressed by
+  N threads (system zlib, no new library).  Before, one thread
+  decompressed all the input, and the other threads waited for it.  A
+  member that is not a bgzip block (plain gzip) and all the input after
+  it are read by one thread, as before.  Output is the same for good
+  input.  For damaged bgzip input, the hits printed before the error can
+  differ from `-t 1` (a damaged block gives no data with N > 1).
+
 ## 0.3.0 — 2026-10-07
 
 Output formats.  Without the new options the output (stdout, stderr,
