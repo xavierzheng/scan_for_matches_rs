@@ -13,20 +13,8 @@ The pattern language is described in [`README.original`](README.original)
 
 ## Versions
 
-* **0.0.0** – exact reproduction of the original C program, including its
-  bugs, crashes and fixed limits.
-* **0.1.0** – the bugs and input problems of the original
-  are fixed (see [`CHANGELOG.md`](CHANGELOG.md)).  For all other input the
-  results are byte-identical to the original C program: same hits, same
-  output format, same exit status, same messages.
-* **0.2.0** – faster (gap skipping, `-t N` threads, gzip input); same
-  output as 0.1.0.
-* **0.3.0** – output as GFF3, BED or JSON lines
-  (`--format`), with the parts of a hit named by `%@` labels in the
-  pattern file; `--help`, `--input`, `--output`; faster threads (bgzip
-  input, k-mer index, long dense hits); the 22 TIR patterns in
-  [`tir_scan_patterns/`](tir_scan_patterns/README.md).  Without the new
-  options the output is the same as 0.2.0.
+Newest first:
+
 * **0.4.0** (this version) – several patterns in one run (the input is
   read once), `--lint` and `--explain` for patterns, `--merge` for the
   GFF3 of several runs (genome-wide unique Names), and
@@ -34,6 +22,20 @@ The pattern language is described in [`README.original`](README.original)
   options the output is the same as 0.3.0 (only the version in the GFF3
   header changes; extra file arguments, which 0.3.0 ignored, are now
   pattern files).
+* **0.3.0** – output as GFF3, BED or JSON lines
+  (`--format`), with the parts of a hit named by `%@` labels in the
+  pattern file; `--help`, `--input`, `--output`; faster threads (bgzip
+  input, k-mer index, long dense hits); the 22 TIR patterns in
+  [`tir_scan_patterns/`](tir_scan_patterns/README.md).  Without the new
+  options the output is the same as 0.2.0.
+* **0.2.0** – faster (gap skipping, `-t N` threads, gzip input); same
+  output as 0.1.0.
+* **0.1.0** – the bugs and input problems of the original
+  are fixed (see [`CHANGELOG.md`](CHANGELOG.md)).  For all other input the
+  results are byte-identical to the original C program: same hits, same
+  output format, same exit status, same messages.
+* **0.0.0** – exact reproduction of the original C program, including its
+  bugs, crashes and fixed limits.
 
 ## Build
 
@@ -396,7 +398,10 @@ over-limit patterns, odd bytes and so on, as used for version 0.0.0.
 
 The reference program is the original built on macOS arm64 with Apple
 clang, `cc -std=gnu89 -O2` (the original does not compile with the default
-flags of current compilers).
+flags of current compilers).  On Linux x86_64 (HPC, the C program built
+with gcc 9.5), version 0.4.0 gives the same result in 20 000 `--compat`
+cases.  `fuzz_skip.py` there uses version 0.1.0 (no gap skipping) built
+from its git tag as the old binary.
 
 ## Speed
 
@@ -421,14 +426,24 @@ thread keeps a copy of the record it searches (about 2 bytes per base);
 the index of a record is shared.
 
 22 TIR patterns of B. napus ([`tir_scan_patterns/`](tir_scan_patterns/README.md), for example
-`p1=8...8 p2=5...7 50...30000 ~p2 p1`), Apple M4, same hits for all
-versions; times are the sum over the 22 patterns:
+`p1=8...8 p2=5...7 50...30000 ~p2 p1`), whole genome (1.0 Gb, bgzip),
+`-c --dedup --format gff3 -t 20`, HPC (Intel Xeon Gold 6238R), same hits
+for all versions (newest first):
 
-| input | C (original) | 0.1.0 | 0.2.0 |
+| version | time | max memory |
+|---|---|---|
+| 0.4.0, the 22 pattern files in one run | 648 s | 6.4 GB |
+| 0.3.0, 22 runs (sum) | 762 s | 4.9 GB |
+| 0.3.0 without the warm-up and bgzip threads, 22 runs | 1546 s | 10 GB |
+
+Apple M4, same hits for all versions; times are the sum over the 22
+patterns:
+
+| input | 0.2.0 | 0.1.0 | C (original) |
 |---|---|---|---|
-| chromosome A1, 1 Mb, 22 patterns, 1 thread | 3162 s | 3963 s | 3.2 s |
-| chromosome A1, 31 Mb, 22 patterns, 1 thread | – | – | 107 s |
-| genome, 1.0 Gb, 22 patterns, `-t 8` | – | – | 9.6 min (max 5.6 GB) |
+| chromosome A1, 1 Mb, 22 patterns, 1 thread | 3.2 s | 3963 s | 3162 s |
+| chromosome A1, 31 Mb, 22 patterns, 1 thread | 107 s | – | – |
+| genome, 1.0 Gb, 22 patterns, `-t 8` | 9.6 min (max 5.6 GB) | – | – |
 
 Threads, whole genome, one pattern (02_DTA_short5to7, 81 514 hits):
 

@@ -28,7 +28,8 @@ the GFF3 header line changes).
   `--overlap F`, reciprocal), sort (seqid in natural order, then start),
   and give new genome-wide unique Names (`--name-prefix`,
   `--name-start`); `ID`/`Parent`/`Name` renamed, the kept element gets
-  `Merged=file:old_Name`.  gzip input is accepted.
+  `Merged=file:old_Name`.  gzip input is accepted.  An ID used by two
+  elements of one file (files joined with `cat`) is an error.
 - `tools/jaspar2sfm.py`: a JASPAR matrix to a weight unit, with the
   cutoff for a p-value (exact distribution of the integer scores).
   Python standard library only.
@@ -47,6 +48,12 @@ pattern are the same.
 `--merge` of that output (806 397 elements, 1 thread): 12.7 s, 2.5 GB;
 53 890 elements with the same span removed (202 311 with `--overlap
 0.9`).
+
+Tests (HPC, Linux x86_64): `cargo test --release`; `fuzz_threads.py`
+2 x 1000 and 500 with `--format`: no difference; `fuzz_compare.py
+--compat` against the C program built on Linux: 20 000 cases, no
+difference; `fuzz_skip.py` (0.1.0 vs 0.4.0) 800 + 1000 `--chain`: no
+difference.
 
 ## 0.3.0 — 2026-10-08
 
