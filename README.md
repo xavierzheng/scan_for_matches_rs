@@ -11,6 +11,56 @@ inexact matches, weight matrices, alternatives, length limits, `^`/`$`,
 The pattern language is described in [`README.original`](README.original)
 (the original documentation).
 
+## Quick start
+
+**Why use it**
+
+* Same pattern language and same results as the original C program (tested
+  against it), without its crashes and size limits.
+* Fast: gap skipping (up to 1000× on TIR patterns), `-t N` threads, gzip /
+  bgzip input.  22 TIR patterns on a 1.0 Gb genome: about 11 min on 20
+  threads.
+* Output as GFF3, BED or JSON lines, with named parts (TSD, TIR, ...) and
+  unique Names; several patterns in one run; `--merge` for one
+  genome-wide file.
+* `--lint` and `--explain` check and describe a pattern before a long run.
+* 22 ready-made TIR transposon patterns in
+  [`tir_scan_patterns/`](tir_scan_patterns/README.md).
+
+**Install**
+
+* macOS (Apple silicon): download `scan_for_matches-<version>-macos-arm64.tar.gz`
+  from [Releases](https://github.com/xavierzheng/scan_for_matches_rs/releases).
+* Linux or other systems: install Rust (<https://rustup.rs>), then
+
+  ```sh
+  git clone https://github.com/xavierzheng/scan_for_matches_rs.git
+  cd scan_for_matches_rs
+  cargo build --release      # binary: target/release/scan_for_matches
+  ```
+
+  No other libraries are needed (the system zlib is used).
+
+**Use**
+
+```sh
+# a hairpin: a 4-7 bp stem, a 3-8 bp loop, the reverse complement of the stem
+echo 'p1=4...7 3...8 ~p1' > hairpin.pat
+scan_for_matches hairpin.pat < seqs.fa > hits.txt
+
+# check a pattern first (no input is read)
+scan_for_matches --explain hairpin.pat
+scan_for_matches --lint -c hairpin.pat
+
+# TIR transposons in a genome: GFF3, 8 threads, all 22 patterns in one run,
+# then one file with genome-wide unique Names
+scan_for_matches -t 8 -c --dedup --format gff3 \
+    --input genome.fa.gz --output tir_all.gff3 tir_scan_patterns/labelled/*.pat
+scan_for_matches --merge --output tir.gff3 tir_all.gff3
+
+scan_for_matches --help      # all options
+```
+
 ## Versions
 
 Newest first:
