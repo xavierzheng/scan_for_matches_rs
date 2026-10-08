@@ -123,7 +123,21 @@
       averages of the matching weights, while all other units never
       match `N`.
 
-## Memory: next work (planned 2026-10-08, in this order)
+## Documentation: pattern guide (planned 2026-10-08)
+
+- [ ] `PATTERNS.md` (repo root; `docs/` is not pushed): the pattern
+      language for biology undergraduates.  Table of contents with links
+      to each section; text diagrams (TSD, TIR, gap, hairpin); every
+      example run with the binary and checked with `--explain`; the traps
+      that `--lint` reports.  Written by a Sonnet agent.
+- [ ] Check with a Haiku agent that gets only `PATTERNS.md`: 10 tasks
+      ("write a pattern for ..."); its patterns are graded with the binary
+      (`--lint` without errors, the planted sites in a test sequence are
+      found); wrong answers show unclear parts; 1-2 rounds of fixes.  Also
+      a list of words an undergraduate does not know.
+- [ ] Link `PATTERNS.md` from the README (intro and Quick start).
+
+ (planned 2026-10-08, in this order)
 
 Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
 `-t 20`, BED6, version 0.4.0 (`../bench_zma/`):
