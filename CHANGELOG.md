@@ -21,11 +21,23 @@
   one thread built it and the others waited.  The index is the same.
 
 B. napus genome (1.0 Gb, bgzip), 22 TIR patterns, `-c --dedup --format
-gff3 -t 20`, Intel Xeon Gold 6238R: 1546 s → 1087 s in total, outputs
-byte-identical (md5).  Short patterns about 2.5× faster (00_DTC 24.5 s
-→ 9.7 s, CPU use 28 % → 70 %); long ones about 1.5× (04_DTE 151 s →
-96 s).  Not faster: 02_DTA_short5to7 and 08_DTH_Tourist_seed8 (see
-TODO, "Speed").
+gff3 -t 20`, Intel Xeon Gold 6238R: 1546 s → 1087 s in total with the
+two changes above, outputs byte-identical (md5).  Short patterns about
+2.5× faster (00_DTC 24.5 s → 9.7 s, CPU use 28 % → 70 %); long ones
+about 1.5× (04_DTE 151 s → 96 s).
+- `-t N` without `-o`: patterns with long, dense hits (a wide gap and a
+  hit almost everywhere) are fast with threads now.  Before, the writer
+  thread searched most pieces again by itself: the chain of
+  non-overlapping hits of a worker met the one-thread chain only after
+  about 300 kb (measured), and pieces are 1 Mb.  Now, when the writer
+  has to search more than 1/20 of the positions again, each worker
+  starts its chain up to 2 Mb before its piece (warm-up; those hits are
+  not printed), and new long records get pieces 4 times the warm-up.
+  The writer still checks every piece, so the output is the same.
+  Other patterns do not change (no warm-up).  B. napus genome, `-t 20`:
+  02_DTA_short5to7 308 s → 106 s, 08_DTH_Tourist_seed8 160 s → 35 s;
+  peak memory 10 GB → 5 GB.  `SFM_WARM=N` (tests) fixes the warm-up.
+  All 22 patterns: 1546 s (0.3.0) → 762 s, outputs byte-identical.
 
 ## 0.3.0 — 2026-10-07
 

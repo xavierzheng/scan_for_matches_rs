@@ -132,13 +132,11 @@
       (each thread copies each long record; whole genome, 00_DTC `-c`:
       5.8 s without pieces, 9.3 s with them).  Sharing one copy needs a
       change of the engine memory layout.
-- [ ] Without `-o`, with `-t N`, the writer thread searches a piece
-      again by itself (one thread) until its chain of non-overlapping
-      hits meets the worker's chain (`join_piece`).  Long, dense hits
-      (wide gap, many hits) often never meet in a piece: 02_DTA_short5to7
-      (308 s, CPU 33 %) and 08_DTH_Tourist_seed8 (160 s, CPU 24 %) on the
-      B. napus genome, `-t 20`.  Possible change: workers report all hits
-      of a piece and the writer only walks the chain (cost when hits are
-      very dense not measured).
+- [x] Without `-o`, with `-t N`, the writer thread searched a piece
+      again by itself until its chain of non-overlapping hits met the
+      worker's chain (`join_piece`); with long, dense hits that took
+      about 300 kb (1 Mb pieces).  Fixed by an adaptive warm-up before
+      each piece (02_DTA_short5to7 308 s → 106 s, 08_DTH_Tourist_seed8
+      160 s → 35 s, B. napus, `-t 20`).
 - [ ] Each engine maps 4 GB of address space (`CD_CAP`) and never unmaps
       it (fine for a command-line run).

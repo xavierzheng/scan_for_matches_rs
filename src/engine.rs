@@ -3893,7 +3893,10 @@ mod tests {
         let one = build_index(&seq, None);
         for t in [1, 2, 3, 7, 64] {
             let par = build_index_par(&seq, t);
-            assert!(one.starts == par.starts && one.pos == par.pos, "threads {t}");
+            assert!(
+                one.starts == par.starts && one.pos == par.pos,
+                "threads {t}"
+            );
         }
         // a part boundary inside a run of plain bases and next to an N
         let mut s2 = vec![1u8; 2 << 20];

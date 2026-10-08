@@ -593,6 +593,76 @@ fn piece_size() -> usize {
         .unwrap_or(1 << 20)
 }
 
+/// Warm-up before each piece (see `PieceEngine::search`).  The writer
+/// turns it on when it has to search pieces again itself too often
+/// (long, dense hits: the chain of a worker meets the one-thread chain
+/// only after many hits); then the reader also makes larger pieces, so
+/// the warm-up costs about a quarter more work.  The environment
+/// variable SFM_WARM=N (tests) fixes it to N positions.
+struct Warm {
+    /// positions searched before each piece
+    len: std::sync::atomic::AtomicUsize,
+    fixed: bool,
+}
+
+/// Largest warm-up.
+const MAX_WARM: usize = 2 << 20;
+
+impl Warm {
+    fn new() -> Warm {
+        let fixed = std::env::var("SFM_WARM")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok());
+        Warm {
+            len: std::sync::atomic::AtomicUsize::new(fixed.unwrap_or(0)),
+            fixed: fixed.is_some(),
+        }
+    }
+
+    fn get(&self) -> usize {
+        self.len.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Piece size for the next long record.
+    fn piece(&self, base: usize) -> usize {
+        if self.fixed {
+            base
+        } else {
+            base.max(4 * self.get())
+        }
+    }
+}
+
+/// What the writer counts to set the warm-up.
+#[derive(Default)]
+struct WarmStats {
+    /// positions in pieces, positions searched again, largest distance
+    /// searched again in one piece
+    seen: u64,
+    again: u64,
+    max_again: usize,
+}
+
+impl WarmStats {
+    /// The writer joined a piece of `len` positions and searched `again`
+    /// of them itself.  When more than 1/20 of all positions so far were
+    /// searched again, the warm-up becomes twice the largest distance
+    /// searched again in one piece (at most MAX_WARM; it never gets
+    /// smaller).
+    fn joined(&mut self, warm: &Warm, len: usize, again: usize) {
+        if warm.fixed {
+            return;
+        }
+        self.seen += len as u64;
+        self.again += again as u64;
+        self.max_again = self.max_again.max(again);
+        if self.again * 20 > self.seen && self.seen >= 8 << 20 {
+            let w = (2 * self.max_again).min(MAX_WARM).max(warm.get());
+            warm.len.store(w, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 /// A long record searched in pieces; the k-mer index of each strand is
 /// built once and shared by all engines.
 struct LongRec {
@@ -631,6 +701,9 @@ struct PieceHits {
     out: HitBuf,
     starts: Vec<i64>,
     pasts: Vec<i64>,
+    /// the worker found `starts[0]` searching from here: no hit starts
+    /// in `e0..starts[0]` (`from` without warm-up; i64::MAX: unknown)
+    e0: i64,
 }
 
 /// What a worker or the reader sends to the writer, in input order.
@@ -693,8 +766,11 @@ impl PieceEngine {
     }
 
     /// The hits of a piece: all of them (`all`, forward strand with -o),
-    /// or the chain of non-overlapping hits from its first start.
-    fn search(&mut self, job: &PieceJob, all: bool) -> PieceHits {
+    /// or the chain of non-overlapping hits from its first start.  With
+    /// `warm` > 0 the chain starts `warm` positions before the piece (hits
+    /// that start before it are not kept), so that it has most likely
+    /// met the one-thread chain when the piece starts.
+    fn search(&mut self, job: &PieceJob, all: bool, warm: usize) -> PieceHits {
         let rec = &*job.rec;
         self.load(rec, job.rev);
         let mut pr = Printer {
@@ -704,14 +780,25 @@ impl PieceEngine {
         };
         let (mut starts, mut pasts) = (Vec::new(), Vec::new());
         let cb = self.eng.cdata_base();
+        let from = job.from as i64;
+        let warm = if all || job.first { 0 } else { warm };
+        let mut e0 = from;
         let mut i = self.eng.first_match_in(
             rec.ln as i32,
-            job.from as i64,
+            job.from.saturating_sub(warm) as i64,
             job.last as i64,
             &mut self.hits,
         );
         while i > 0 {
             let n = i as usize;
+            let (s, p) = (self.hits[0] - cb, self.hits[n] - cb);
+            if s < from {
+                // warm-up hit: the search goes on from its end (from its
+                // start when it is empty: then e0 is not known)
+                e0 = if p > s { p.max(from) } else { i64::MAX };
+                i = self.eng.cont_match(&mut self.hits);
+                continue;
+            }
             print_hit(
                 &mut pr, &self.eng, &rec.id, job.rev, rec.ln, &self.hits, n, &self.data,
             );
@@ -727,6 +814,7 @@ impl PieceEngine {
             out: pr.out,
             starts,
             pasts,
+            e0,
         }
     }
 }
@@ -755,9 +843,12 @@ fn run_threads(
     let job_rx = Arc::new(Mutex::new(job_rx));
     let (done_tx, done_rx) = mpsc::channel::<(usize, Done)>();
     let split = split && !opts.protein;
-    let piece = piece_size();
+    let base_piece = piece_size();
+    let warm = Arc::new(Warm::new());
+    let mut wstats = WarmStats::default();
 
     let tx = done_tx.clone();
+    let rwarm = Arc::clone(&warm);
     std::thread::spawn(move || {
         let mut rd = FastaReader::new(fasta_source(input, opts.threads));
         let mut k = 0usize;
@@ -768,6 +859,7 @@ fn run_threads(
                         continue;
                     }
                     let ln = body.iter().position(|&b| b == 0).unwrap_or(body.len());
+                    let piece = rwarm.piece(base_piece);
                     if !split || ln < 2 * piece {
                         if job_tx.send((k, Job::Whole(id, body))).is_err() {
                             return;
@@ -828,6 +920,7 @@ fn run_threads(
         let rx = Arc::clone(&job_rx);
         let tx = done_tx.clone();
         let line = Arc::clone(&line);
+        let warm = Arc::clone(&warm);
         std::thread::Builder::new()
             .stack_size(1 << 30) // the parser recurses as deeply as the C code
             .spawn(move || {
@@ -861,7 +954,7 @@ fn run_threads(
                             Done::Hits(pr.out)
                         }
                         Job::Piece(job) => {
-                            let ph = pe.search(&job, opts.show_overlaps && !job.rev);
+                            let ph = pe.search(&job, opts.show_overlaps && !job.rev, warm.get());
                             Done::Piece(job, ph)
                         }
                     };
@@ -927,8 +1020,18 @@ fn run_threads(
                         e.parse_cmd(&line, seq_type);
                         PieceEngine::new(e, opts.raw, opts.threads)
                     });
-                    rec_hit |=
-                        join_piece(&mut out, &job, &ph, we, &mut wpr, &mut past, &mut max_hits);
+                    let mut again = 0;
+                    rec_hit |= join_piece(
+                        &mut out,
+                        &job,
+                        &ph,
+                        we,
+                        &mut wpr,
+                        &mut past,
+                        &mut max_hits,
+                        &mut again,
+                    );
+                    wstats.joined(&warm, job.last + 1 - job.from, again);
                 }
                 if job.end_of_record {
                     out.end_record();
@@ -966,7 +1069,8 @@ fn print_hits(out: &mut Writer, h: &HitBuf, from: usize, max_hits: &mut i32) -> 
 /// last hit printed on the strand.  The worker's hits are right from the
 /// first one that the true search reaches; before that the piece is
 /// searched again from `past` with `we`.  Returns whether a hit was
-/// printed.
+/// printed; `searched` is set to the number of positions of the piece
+/// searched again.
 #[allow(clippy::too_many_arguments)]
 fn join_piece(
     out: &mut Writer,
@@ -976,21 +1080,30 @@ fn join_piece(
     wpr: &mut Printer<HitBuf>,
     past: &mut i64,
     max_hits: &mut i32,
+    searched: &mut usize,
 ) -> bool {
     let last = job.last as i64;
+    let from = job.from as i64;
     let mut printed = false;
     let mut again = false; // `we` holds a search of this piece
+    let mut again_from = 0i64;
     loop {
+        if again {
+            *searched = ((*past).min(last + 1) - again_from).max(0) as usize;
+        }
         if *past > last || *max_hits <= 0 {
             return printed;
         }
         // the worker's first hit at or after `past`
         let j = ph.starts.partition_point(|&s| s < *past);
-        // the worker searched on from the end of hit j-1, at or before
-        // `past`: from here on its hits are the true ones.  (When the
-        // last hit has length 0 the search goes on at its own start,
-        // so only an ending after the start is used.)
-        let synced = j == 0 || ph.pasts[j - 1] <= *past;
+        // the worker searched on from the end of hit j-1 (from `e0` for
+        // its first hit), at or before `past`: from here on its hits are
+        // the true ones.  (When the last hit has length 0 the search goes
+        // on at its own start, so only an ending after the start is
+        // used.)  No hit starts between `past` and `from` (the earlier
+        // pieces were joined up to there).
+        let prev = if j == 0 { ph.e0 } else { ph.pasts[j - 1] };
+        let synced = prev <= (*past).max(from);
         if synced && (!again || we.last_hit_nonempty) {
             if j < ph.starts.len() {
                 let n = print_hits(out, &ph.out, j, max_hits);
@@ -1004,6 +1117,7 @@ fn join_piece(
         // search the piece again from `past`
         let i = if !again {
             again = true;
+            again_from = (*past).max(from);
             we.load(&job.rec, job.rev);
             we.eng
                 .first_match_in(job.rec.ln as i32, *past, last, &mut we.hits)
@@ -1011,6 +1125,8 @@ fn join_piece(
             we.eng.cont_match(&mut we.hits)
         };
         if i <= 0 {
+            // searched to the end of the piece
+            *searched = (last + 1 - again_from).max(0) as usize;
             return printed;
         }
         let n = i as usize;
