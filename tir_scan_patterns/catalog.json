@@ -1,0 +1,178 @@
+[
+  {
+    "file": "00_DTC_published_2025.pat",
+    "candidate_group": "DTC",
+    "pattern": "p1=3...3 CACTA[0,0,0] p2=7...7 500...15000 ~p2 TAGTG[0,0,0] p1",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 3,
+    "note": "published; supplied example"
+  },
+  {
+    "file": "01_DTT_seed12.pat",
+    "candidate_group": "DTT",
+    "pattern": "TA[0,0,0] p2=12...12 50...30000 ~p2 TA[0,0,0]",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 2,
+    "note": "TA TSD; no family-specific TIR motif"
+  },
+  {
+    "file": "01_DTT_Stowaway_seed12.pat",
+    "candidate_group": "DTT",
+    "pattern": "TA[0,0,0] CTCCTCCC[0,0,0] p2=4...4 50...30000 ~p2 GGGAGGAG[0,0,0] TA[0,0,0]",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 2,
+    "note": "Stowaway motif subset only"
+  },
+  {
+    "file": "02_DTA_seed8.pat",
+    "candidate_group": "DTA/DTP/DTE ambiguous",
+    "pattern": "p1=8...8 p2=8...8 50...30000 ~p2 p1",
+    "terminal_seed_bp": 8,
+    "TSD_test_bp": 8,
+    "note": "8-bp TSD; not diagnostic of hAT alone"
+  },
+  {
+    "file": "02_DTA_short5to7.pat",
+    "candidate_group": "DTA/DTP/DTE ambiguous",
+    "pattern": "p1=8...8 p2=5...7 50...30000 ~p2 p1",
+    "terminal_seed_bp": 5,
+    "TSD_test_bp": 8,
+    "note": "short-TIR recovery; high false-positive burden"
+  },
+  {
+    "file": "03_DTM_G_seed20.pat",
+    "candidate_group": "DTM",
+    "pattern": "p1=9...11 G[0,0,0] p2=19...19 50...30000 ~p2 C[0,0,0] p1",
+    "terminal_seed_bp": 20,
+    "TSD_test_bp": 9,
+    "note": "G/C-terminal subset; misses absent or divergent TIRs"
+  },
+  {
+    "file": "03_DTM_unanchored_seed20.pat",
+    "candidate_group": "DTM candidate",
+    "pattern": "p1=9...11 p2=20...20 50...30000 ~p2 p1",
+    "terminal_seed_bp": 20,
+    "TSD_test_bp": 9,
+    "note": "9-11-bp TSD with no terminal-base constraint"
+  },
+  {
+    "file": "04_DTE_seed20.pat",
+    "candidate_group": "DTE candidate",
+    "pattern": "p1=8...9 p2=20...20 50...30000 ~p2 p1",
+    "terminal_seed_bp": 20,
+    "TSD_test_bp": 8,
+    "note": "8-bp branch overlaps DTA/DTP; requires homology evidence"
+  },
+  {
+    "file": "05_DTR_CAC_seed15.pat",
+    "candidate_group": "DTR candidate",
+    "pattern": "p1=5...5 CAC[0,0,0] p2=12...12 50...30000 ~p2 GTG[0,0,0] p1",
+    "terminal_seed_bp": 15,
+    "TSD_test_bp": 5,
+    "note": "CAC motif supported by Kapitonov/Jurka 2005; exact seed is heuristic"
+  },
+  {
+    "file": "05_DTR_unanchored_seed15.pat",
+    "candidate_group": "DTR candidate",
+    "pattern": "p1=5...5 p2=15...15 50...30000 ~p2 p1",
+    "terminal_seed_bp": 15,
+    "TSD_test_bp": 5,
+    "note": "motif-independent 5-bp TSD fallback"
+  },
+  {
+    "file": "06_DTP_seed12.pat",
+    "candidate_group": "DTP/DTA/DTE ambiguous",
+    "pattern": "p1=8...8 p2=12...12 50...30000 ~p2 p1",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 8,
+    "note": "not a P-specific terminal signature"
+  },
+  {
+    "file": "07_DTB_seed12.pat",
+    "candidate_group": "DTB candidate",
+    "pattern": "TTAA[0,0,0] p2=12...12 50...30000 ~p2 TTAA[0,0,0]",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 4,
+    "note": "TTAA is the TSD, not the TIR"
+  },
+  {
+    "file": "08_DTH_seed12.pat",
+    "candidate_group": "DTH/DTC and other 3-bp-TSD candidates",
+    "pattern": "p1=3...3 p2=12...12 50...30000 ~p2 p1",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 3,
+    "note": "broad 3-bp TSD screen; not DTH-specific"
+  },
+  {
+    "file": "08_DTH_TWA_seed12.pat",
+    "candidate_group": "DTH preferred-target subset",
+    "pattern": "p1=TWA[0,0,0] p2=12...12 50...30000 ~p2 p1",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 3,
+    "note": "TWA=TAA or TTA; p1 enforces identical TSDs"
+  },
+  {
+    "file": "08_DTH_Tourist_seed8.pat",
+    "candidate_group": "Tourist-like candidate",
+    "pattern": "p1=3...3 p3=S[0,0,0] p2=7...7 50...30000 ~p2 ~p3 p1",
+    "terminal_seed_bp": 8,
+    "TSD_test_bp": 3,
+    "note": "S=G/C captured as actual base; mirrors RiTE motif criterion, not a quoted published pattern"
+  },
+  {
+    "file": "09_DTC_CACTA_seed12.pat",
+    "candidate_group": "DTC plant CACTA subset",
+    "pattern": "p1=3...3 CACTA[0,0,0] p2=7...7 50...30000 ~p2 TAGTG[0,0,0] p1",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 3,
+    "note": "expanded spacer window; 12-bp exact terminal seed"
+  },
+  {
+    "file": "09_DTC_CACTG_seed12.pat",
+    "candidate_group": "DTC plant CACTG subset",
+    "pattern": "p1=3...3 CACTG[0,0,0] p2=7...7 50...30000 ~p2 CAGTG[0,0,0] p1",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 3,
+    "note": "CACTG reverse complement is CAGTG"
+  },
+  {
+    "file": "09_DTC_CACTA_seed10.pat",
+    "candidate_group": "DTC plant CACTA subset",
+    "pattern": "p1=3...3 CACTA[0,0,0] p2=5...5 50...30000 ~p2 TAGTG[0,0,0] p1",
+    "terminal_seed_bp": 10,
+    "TSD_test_bp": 3,
+    "note": "recovers exact TIRs as short as 10 bp; lower specificity"
+  },
+  {
+    "file": "09_DTC_CACTG_seed10.pat",
+    "candidate_group": "DTC plant CACTG subset",
+    "pattern": "p1=3...3 CACTG[0,0,0] p2=5...5 50...30000 ~p2 CAGTG[0,0,0] p1",
+    "terminal_seed_bp": 10,
+    "TSD_test_bp": 3,
+    "note": "short-seed counterpart to CACTG_seed12"
+  },
+  {
+    "file": "09_DTC_CCC_seed12.pat",
+    "candidate_group": "DTC animal/fungal CCC subset (Wicker 2007)",
+    "pattern": "p1=2...2 CCC[0,0,0] p2=9...9 50...30000 ~p2 GGG[0,0,0] p1",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 2,
+    "note": "historical Wicker classification scope"
+  },
+  {
+    "file": "10_DMM_Maverick_seed30.pat",
+    "candidate_group": "DMM; outside TIR order",
+    "pattern": "p1=6...6 p2=30...30 9940...19940 ~p2 p1",
+    "terminal_seed_bp": 30,
+    "TSD_test_bp": 6,
+    "note": "30-bp terminal seed; TE length 10000-20000 bp; requires protein confirmation"
+  },
+  {
+    "file": "09_DTC_CACTA_relaxed1.pat",
+    "candidate_group": "DTC plant CACTA subset",
+    "pattern": "p1=3...3 CACTA[0,0,0] p2=7...7 50...30000 ~p2[1,0,0] TAGTG[0,0,0] p1",
+    "terminal_seed_bp": 12,
+    "TSD_test_bp": 3,
+    "note": "one substitution allowed in 7-bp p2; motif/TSD exact"
+  }
+]

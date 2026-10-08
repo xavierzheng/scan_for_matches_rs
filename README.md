@@ -23,7 +23,10 @@ The pattern language is described in [`README.original`](README.original)
   output as 0.1.0.
 * **0.3.0** (this version) – output as GFF3, BED or JSON lines
   (`--format`), with the parts of a hit named by `%@` labels in the
-  pattern file.  Without `--format` the output is the same as 0.2.0.
+  pattern file; `--help`, `--input`, `--output`; faster threads (bgzip
+  input, k-mer index, long dense hits); the 22 TIR patterns in
+  [`tir_scan_patterns/`](tir_scan_patterns/README.md).  Without the new
+  options the output is the same as 0.2.0.
 
 ## Build
 
@@ -274,7 +277,7 @@ the threads share; the output is the same as with one thread.  Each
 thread keeps a copy of the record it searches (about 2 bytes per base);
 the index of a record is shared.
 
-22 TIR patterns of B. napus (`tir_scan_patterns`, for example
+22 TIR patterns of B. napus ([`tir_scan_patterns/`](tir_scan_patterns/README.md), for example
 `p1=8...8 p2=5...7 50...30000 ~p2 p1`), Apple M4, same hits for all
 versions; times are the sum over the 22 patterns:
 

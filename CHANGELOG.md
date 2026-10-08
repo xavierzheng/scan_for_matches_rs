@@ -1,48 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-10-08
 
-### New
-- `-h` / `--help`: all options, with an example.
-- `--input FILE` and `--output FILE` (`-`: stdin / stdout).  Without them
-  the program reads stdin and writes stdout as before.  `-i` and `-o`
-  keep their original meaning.
-
-### Faster
-- bgzip input with `-t N` (N > 1): the bgzip blocks are decompressed by
-  N threads (system zlib, no new library).  Before, one thread
-  decompressed all the input, and the other threads waited for it.  A
-  member that is not a bgzip block (plain gzip) and all the input after
-  it are read by one thread, as before.  Output is the same for good
-  input.  For damaged bgzip input, the hits printed before the error can
-  differ from `-t 1` (a damaged block gives no data with N > 1).
-- `-t N`: the k-mer index of a long record (one per strand, shared by
-  the threads that search its pieces) is built by N threads.  Before,
-  one thread built it and the others waited.  The index is the same.
-
-B. napus genome (1.0 Gb, bgzip), 22 TIR patterns, `-c --dedup --format
-gff3 -t 20`, Intel Xeon Gold 6238R: 1546 s → 1087 s in total with the
-two changes above, outputs byte-identical (md5).  Short patterns about
-2.5× faster (00_DTC 24.5 s → 9.7 s, CPU use 28 % → 70 %); long ones
-about 1.5× (04_DTE 151 s → 96 s).
-- `-t N` without `-o`: patterns with long, dense hits (a wide gap and a
-  hit almost everywhere) are fast with threads now.  Before, the writer
-  thread searched most pieces again by itself: the chain of
-  non-overlapping hits of a worker met the one-thread chain only after
-  about 300 kb (measured), and pieces are 1 Mb.  Now, when the writer
-  has to search more than 1/20 of the positions again, each worker
-  starts its chain up to 2 Mb before its piece (warm-up; those hits are
-  not printed), and new long records get pieces 4 times the warm-up.
-  The writer still checks every piece, so the output is the same.
-  Other patterns do not change (no warm-up).  B. napus genome, `-t 20`:
-  02_DTA_short5to7 308 s → 106 s, 08_DTH_Tourist_seed8 160 s → 35 s;
-  peak memory 10 GB → 5 GB.  `SFM_WARM=N` (tests) fixes the warm-up.
-  All 22 patterns: 1546 s (0.3.0) → 762 s, outputs byte-identical.
-
-## 0.3.0 — 2026-10-07
-
-Output formats.  Without the new options the output (stdout, stderr,
-exit status) is byte-identical to 0.2.0.
+Output formats, new options, faster threads.  Without the new options
+the output (stdout, stderr, exit status) is byte-identical to 0.2.0.
 
 ### New
 - `--format gff3|bed6|bed12|jsonl`: hits as GFF3, BED or JSON lines.
@@ -63,7 +24,49 @@ exit status) is byte-identical to 0.2.0.
 - `--dedup`: with `-c`, the reverse-strand copy of an element already
   found on the forward strand (same span) is dropped and the element gets
   strand `.`; `-m` counts the elements written.
-- Labelled copies of the 22 TIR patterns (outside the repository).
+- `-h` / `--help`: all options, with an example.
+- `--input FILE` and `--output FILE` (`-`: stdin / stdout).  Without them
+  the program reads stdin and writes stdout as before.  `-i` and `-o`
+  keep their original meaning.
+- `tir_scan_patterns/`: the 22 TIR candidate patterns (after Wicker et
+  al. 2007), their labelled copies for `--format` (`labelled/`), and
+  their documentation in English (`README.md`) and Traditional Chinese
+  (`README_zh-TW.txt`).
+
+### Faster
+- bgzip input with `-t N` (N > 1): the bgzip blocks are decompressed by
+  N threads (system zlib, no new library).  Before, one thread
+  decompressed all the input, and the other threads waited for it.  A
+  member that is not a bgzip block (plain gzip) and all the input after
+  it are read by one thread, as before.  Output is the same for good
+  input.  For damaged bgzip input, the hits printed before the error can
+  differ from `-t 1` (a damaged block gives no data with N > 1).
+- `-t N`: the k-mer index of a long record (one per strand, shared by
+  the threads that search its pieces) is built by N threads.  Before,
+  one thread built it and the others waited.  The index is the same.
+- `-t N` without `-o`: patterns with long, dense hits (a wide gap and a
+  hit almost everywhere) are fast with threads now.  Before, the writer
+  thread searched most pieces again by itself: the chain of
+  non-overlapping hits of a worker met the one-thread chain only after
+  about 300 kb (measured), and pieces are 1 Mb.  Now, when the writer
+  has to search more than 1/20 of the positions again, each worker
+  starts its chain up to 2 Mb before its piece (warm-up; those hits are
+  not printed), and new long records get pieces 4 times the warm-up.
+  The writer still checks every piece, so the output is the same.
+  Other patterns do not change (no warm-up).  `SFM_WARM=N` (tests)
+  fixes the warm-up.
+
+B. napus genome (1.0 Gb, bgzip), 22 TIR patterns, `-c --dedup --format
+gff3 -t 20`, Intel Xeon Gold 6238R, outputs byte-identical (md5) to the
+first 0.3.0 code (output formats only):
+
+| | total of 22 patterns | 00_DTC | 02_DTA_short5to7 | 08_DTH_Tourist_seed8 |
+|---|---|---|---|---|
+| output formats only | 1546 s | 25.2 s | 337 s | 155 s |
+| + bgzip threads, index threads | 1087 s | 9.6 s | 308 s | 160 s |
+| + warm-up (0.3.0) | 762 s | 9.6 s | 106 s | 35 s |
+
+Peak memory of the two dense patterns: 10 GB → 5 GB.
 
 ## 0.2.0 — 2026-10-03
 

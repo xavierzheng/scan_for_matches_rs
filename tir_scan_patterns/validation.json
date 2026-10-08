@@ -1,0 +1,209 @@
+{
+  "scope": "Synthetic syntax/logic checks only; no biological recall/precision benchmark.",
+  "source_archive_sha256": "c6b17930efbdfbac28b57c3a0b4f8c26effb36c48988d82e41c81c6962e2d68f",
+  "patterns": [
+    {
+      "pattern": "00_DTC_published_2025",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "01_DTT_seed12",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "01_DTT_Stowaway_seed12",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "02_DTA_seed8",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "02_DTA_short5to7",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "03_DTM_G_seed20",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "03_DTM_unanchored_seed20",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "04_DTE_seed20",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "05_DTR_CAC_seed15",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "05_DTR_unanchored_seed15",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "06_DTP_seed12",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "07_DTB_seed12",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "08_DTH_seed12",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "08_DTH_TWA_seed12",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "08_DTH_Tourist_seed8",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "09_DTC_CACTA_seed12",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "09_DTC_CACTG_seed12",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "09_DTC_CACTA_seed10",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "09_DTC_CACTG_seed10",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "09_DTC_CCC_seed12",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "10_DMM_Maverick_seed30",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    },
+    {
+      "pattern": "09_DTC_CACTA_relaxed1",
+      "positive": true,
+      "reject_wrong_TSD": true,
+      "reject_excess_TIR_substitutions": true
+    }
+  ],
+  "extra_cases": [
+    {
+      "case": "DTH_TAA",
+      "pass": true
+    },
+    {
+      "case": "DTH_TTA",
+      "pass": true
+    },
+    {
+      "case": "Tourist_G",
+      "pass": true
+    },
+    {
+      "case": "Tourist_C",
+      "pass": true
+    },
+    {
+      "case": "03_DTM_G_seed20_TSD9",
+      "pass": true
+    },
+    {
+      "case": "03_DTM_G_seed20_TSD10",
+      "pass": true
+    },
+    {
+      "case": "03_DTM_G_seed20_TSD11",
+      "pass": true
+    },
+    {
+      "case": "04_DTE_seed20_TSD8",
+      "pass": true
+    },
+    {
+      "case": "04_DTE_seed20_TSD9",
+      "pass": true
+    },
+    {
+      "case": "DTC_relaxed_one_substitution",
+      "pass": true
+    },
+    {
+      "case": "published_gap_499",
+      "pass": true
+    },
+    {
+      "case": "published_gap_500",
+      "pass": true
+    },
+    {
+      "case": "published_gap_15000",
+      "pass": true
+    },
+    {
+      "case": "published_gap_15001",
+      "pass": true
+    }
+  ],
+  "indel_probe": {
+    "[0,1,0]": {
+      "ACGT": true,
+      "ACAGT": false,
+      "AGT": true
+    },
+    "[0,0,1]": {
+      "ACGT": true,
+      "ACAGT": true,
+      "AGT": false
+    }
+  },
+  "overlap_test_pass": true
+}

@@ -1,0 +1,91 @@
+Scan for Matches TIR patterns - index
+Read README.md (English) or README_zh-TW.txt (Traditional Chinese) before running. All except 00_DTC_published_2025 are designed candidate screens.
+
+00_DTC_published_2025.pat
+p1=3...3 CACTA[0,0,0] p2=7...7 500...15000 ~p2 TAGTG[0,0,0] p1
+DTC; published; supplied example
+
+01_DTT_seed12.pat
+TA[0,0,0] p2=12...12 50...30000 ~p2 TA[0,0,0]
+DTT; TA TSD; no family-specific TIR motif
+
+01_DTT_Stowaway_seed12.pat
+TA[0,0,0] CTCCTCCC[0,0,0] p2=4...4 50...30000 ~p2 GGGAGGAG[0,0,0] TA[0,0,0]
+DTT; Stowaway motif subset only
+
+02_DTA_seed8.pat
+p1=8...8 p2=8...8 50...30000 ~p2 p1
+DTA/DTP/DTE ambiguous; 8-bp TSD; not diagnostic of hAT alone
+
+02_DTA_short5to7.pat
+p1=8...8 p2=5...7 50...30000 ~p2 p1
+DTA/DTP/DTE ambiguous; short-TIR recovery; high false-positive burden
+
+03_DTM_G_seed20.pat
+p1=9...11 G[0,0,0] p2=19...19 50...30000 ~p2 C[0,0,0] p1
+DTM; G/C-terminal subset; misses absent or divergent TIRs
+
+03_DTM_unanchored_seed20.pat
+p1=9...11 p2=20...20 50...30000 ~p2 p1
+DTM candidate; 9-11-bp TSD with no terminal-base constraint
+
+04_DTE_seed20.pat
+p1=8...9 p2=20...20 50...30000 ~p2 p1
+DTE candidate; 8-bp branch overlaps DTA/DTP; requires homology evidence
+
+05_DTR_CAC_seed15.pat
+p1=5...5 CAC[0,0,0] p2=12...12 50...30000 ~p2 GTG[0,0,0] p1
+DTR candidate; CAC motif supported by Kapitonov/Jurka 2005; exact seed is heuristic
+
+05_DTR_unanchored_seed15.pat
+p1=5...5 p2=15...15 50...30000 ~p2 p1
+DTR candidate; motif-independent 5-bp TSD fallback
+
+06_DTP_seed12.pat
+p1=8...8 p2=12...12 50...30000 ~p2 p1
+DTP/DTA/DTE ambiguous; not a P-specific terminal signature
+
+07_DTB_seed12.pat
+TTAA[0,0,0] p2=12...12 50...30000 ~p2 TTAA[0,0,0]
+DTB candidate; TTAA is the TSD, not the TIR
+
+08_DTH_seed12.pat
+p1=3...3 p2=12...12 50...30000 ~p2 p1
+DTH/DTC and other 3-bp-TSD candidates; broad 3-bp TSD screen; not DTH-specific
+
+08_DTH_TWA_seed12.pat
+p1=TWA[0,0,0] p2=12...12 50...30000 ~p2 p1
+DTH preferred-target subset; TWA=TAA or TTA; p1 enforces identical TSDs
+
+08_DTH_Tourist_seed8.pat
+p1=3...3 p3=S[0,0,0] p2=7...7 50...30000 ~p2 ~p3 p1
+Tourist-like candidate; S=G/C captured as actual base; mirrors RiTE motif criterion, not a quoted published pattern
+
+09_DTC_CACTA_seed12.pat
+p1=3...3 CACTA[0,0,0] p2=7...7 50...30000 ~p2 TAGTG[0,0,0] p1
+DTC plant CACTA subset; expanded spacer window; 12-bp exact terminal seed
+
+09_DTC_CACTG_seed12.pat
+p1=3...3 CACTG[0,0,0] p2=7...7 50...30000 ~p2 CAGTG[0,0,0] p1
+DTC plant CACTG subset; CACTG reverse complement is CAGTG
+
+09_DTC_CACTA_seed10.pat
+p1=3...3 CACTA[0,0,0] p2=5...5 50...30000 ~p2 TAGTG[0,0,0] p1
+DTC plant CACTA subset; recovers exact TIRs as short as 10 bp; lower specificity
+
+09_DTC_CACTG_seed10.pat
+p1=3...3 CACTG[0,0,0] p2=5...5 50...30000 ~p2 CAGTG[0,0,0] p1
+DTC plant CACTG subset; short-seed counterpart to CACTG_seed12
+
+09_DTC_CCC_seed12.pat
+p1=2...2 CCC[0,0,0] p2=9...9 50...30000 ~p2 GGG[0,0,0] p1
+DTC animal/fungal CCC subset (Wicker 2007); historical Wicker classification scope
+
+10_DMM_Maverick_seed30.pat
+p1=6...6 p2=30...30 9940...19940 ~p2 p1
+DMM; outside TIR order; 30-bp terminal seed; TE length 10000-20000 bp; requires protein confirmation
+
+09_DTC_CACTA_relaxed1.pat
+p1=3...3 CACTA[0,0,0] p2=7...7 50...30000 ~p2[1,0,0] TAGTG[0,0,0] p1
+DTC plant CACTA subset; one substitution allowed in 7-bp p2; motif/TSD exact
+
