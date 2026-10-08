@@ -134,7 +134,8 @@ Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
 | 08_DTH_seed12 | 55 s, 15 GB | 57 s, 16 GB | 101 618 → 1 303 532 |
 | 02_DTA_short5to7 | 140 s, 16 GB | 222 s, 97 GB | 163 883 → 40 209 313 |
 
-- [ ] 1. `--format` with `-o`: memory.  Workers send each hit as a raw
+- [x] 1. `--format` with `-o`: memory (done: 97 GB → 3.9 GB with 2).
+      Workers sent each hit as a raw
       record with the text of EVERY unit, also the 50...30000 gap
       (`fmt::encode`), and finished pieces wait in the writer while an
       earlier piece is slow (about 3 x threads pieces).  Fix: send only
@@ -143,7 +144,8 @@ Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
       that wait.  The writer stays the only thread that writes (order,
       Names, `-m`, `--dedup` unchanged).  Temp files for each piece:
       only if this is not enough.  Output must not change.
-- [ ] 2. One copy of each strand of a long record, shared by all threads.
+- [x] 2. One copy of each strand of a long record, shared by all threads
+      (done: maize 00_DTC 13.3 GB → 2.5 GB).
       Now every thread that searches pieces of a record holds its own
       copy (`PieceEngine.data` + the engine's coded sequence, about 2
       bytes per base: 300 Mb x 2 x 20 threads = 12 GB).  The engine reads
@@ -162,7 +164,8 @@ Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
       length (slow for wide ranges such as `50...30000`).
 - [ ] With `-t N` on many long records and a fast pattern, splitting
       long records into pieces is slower than one thread per record
-      (each thread copies each long record; whole genome, 00_DTC `-c`:
+      (each thread copied each long record, until the shared strands;
+      not measured again; whole genome, 00_DTC `-c`:
       5.8 s without pieces, 9.3 s with them).  Sharing one copy needs a
       change of the engine memory layout (see "Memory: next work", 2).
 - [x] Without `-o`, with `-t N`, the writer thread searched a piece

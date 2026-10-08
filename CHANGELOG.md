@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+Less memory with `-t N`; the output does not change.
+
+### Faster
+- `-t N`: the two strands of a long record (letters and coded sequence)
+  are made once and shared, read only, by all threads.  Before, each
+  thread that searched a piece kept its own copy (about 2 bytes per base
+  per thread: 300 Mb x 2 x 20 threads = 12 GB).
+- `--format`: a worker sends the writer only the text of the units the
+  format uses (BED: none; GFF3: the TSD/TIR parts; JSON lines: all).
+  Before, every hit carried the text of every unit, also a 30 kb gap.
+  At most 4 x N jobs are between the reader and the writer (finished
+  pieces waited in memory behind a slow one).
+
+Maize (2.3 Gb, bgzip), `-t 20`, BED6, max RSS, same output as 0.4.0:
+00_DTC 13.3 → 2.5 GB; 08_DTH_seed12 14.8 → 3.4 GB; 02_DTA_short5to7
+16.0 → 5.1 GB; 02_DTA_short5to7 with `-o` (40 million hits) 97 GB, 222 s
+→ 3.9 GB, 107 s.
+
 ## 0.4.0 — 2026-10-08
 
 Several patterns in one run, pattern checks, a merge tool.  Without the

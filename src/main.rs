@@ -689,8 +689,9 @@ impl WarmStats {
     }
 }
 
-/// A record.  A long record is searched in pieces; the k-mer index of
-/// each strand is built once and shared by all engines (and patterns).
+/// A record.  A long record is searched in pieces; each strand (letters
+/// and coded sequence) and its k-mer index are made once and shared by
+/// all engines (and patterns).
 struct LongRec {
     /// unique for each record
     serial: usize,
@@ -698,6 +699,14 @@ struct LongRec {
     body: Vec<u8>,
     ln: usize,
     index: [SharedIndex; 2],
+    strands: [std::sync::OnceLock<std::sync::Arc<Strand>>; 2],
+}
+
+/// One strand of a long record: the letters (for the output) and the
+/// coded sequence the engines search.
+struct Strand {
+    data: Buf,
+    seq: engine::SharedSeq,
 }
 
 /// Work for one worker.  The jobs of a record come one after the other:
@@ -757,7 +766,8 @@ enum Done {
 /// all its pieces).
 struct PieceEngine {
     eng: Engine,
-    data: Buf,
+    /// the strand loaded (shared with the other engines)
+    strand: Option<std::sync::Arc<Strand>>,
     hits: Vec<i64>,
     /// serial number and strand of the record loaded
     loaded: Option<(usize, bool)>,
@@ -777,7 +787,7 @@ impl PieceEngine {
             raw,
             pat,
             eng,
-            data: Buf::new(),
+            strand: None,
             hits: vec![0; 2000],
             loaded: None,
             last_hit_nonempty: true,
@@ -789,20 +799,34 @@ impl PieceEngine {
         if self.loaded == Some(key) {
             return;
         }
-        self.data.store(&rec.body);
-        if rev {
-            reverse_complement(&mut self.data, rec.ln);
-        }
+        let eng = &self.eng;
+        let st = rec.strands[rev as usize].get_or_init(|| {
+            let mut data = Buf::new();
+            data.store(&rec.body);
+            if rev {
+                reverse_complement(&mut data, rec.ln);
+            }
+            let seq = eng.shared_seq(&data);
+            std::sync::Arc::new(Strand { data, seq })
+        });
+        self.eng.set_shared_seq(Some(&st.seq));
         self.eng
             .set_shared_index(Some(rec.index[rev as usize].clone()));
-        self.eng.comp_data(&self.data);
+        self.strand = Some(std::sync::Arc::clone(st));
         self.loaded = Some(key);
+    }
+
+    /// The letters of the strand loaded.
+    fn data(&self) -> &Buf {
+        &self.strand.as_ref().expect("a strand is loaded").data
     }
 
     /// Before searching a whole record with this engine.
     fn unload(&mut self) {
         if self.loaded.is_some() {
             self.eng.set_shared_index(None);
+            self.eng.set_shared_seq(None);
+            self.strand = None;
             self.loaded = None;
         }
     }
@@ -811,7 +835,6 @@ impl PieceEngine {
     /// holds a long record in one engine at a time).
     fn release(&mut self) {
         self.unload();
-        self.data = Buf::new();
         self.eng.release_data();
     }
 
@@ -851,7 +874,14 @@ impl PieceEngine {
                 continue;
             }
             print_hit(
-                &mut pr, &self.eng, &rec.id, job.rev, rec.ln, &self.hits, n, &self.data,
+                &mut pr,
+                &self.eng,
+                &rec.id,
+                job.rev,
+                rec.ln,
+                &self.hits,
+                n,
+                self.data(),
             );
             starts.push(self.hits[0] - cb);
             pasts.push(self.hits[n] - cb);
@@ -921,6 +951,7 @@ fn run_threads(
                         body,
                         ln,
                         index: Default::default(),
+                        strands: Default::default(),
                     });
                     serial += 1;
                     let jobs = record_jobs(&rec, &split, &rwarm, base_piece, opts.complements);
@@ -1283,7 +1314,7 @@ fn join_piece(
             job.rec.ln,
             &we.hits,
             n,
-            &we.data,
+            we.data(),
         );
         out.write(&wpr.out.buf);
         if out.end_hit() {

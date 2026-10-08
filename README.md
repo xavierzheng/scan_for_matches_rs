@@ -471,9 +471,21 @@ range) is searched as before.
 
 (0.2.0) With `-t N`, records are searched at the same time, and a long
 record (2 Mb or more) is cut into pieces of 1 Mb of start positions that
-the threads share; the output is the same as with one thread.  Each
-thread keeps a copy of the record it searches (about 2 bytes per base);
-the index of a record is shared.
+the threads share; the output is the same as with one thread.  (After
+0.4.0) The two strands of a long record (letters and coded sequence,
+about 4 bytes per base) and its index are made once and shared by all
+threads; before, each thread kept its own copy (about 2 bytes per base
+per thread).  A short record is searched by one thread, with its own
+copy.
+
+Maize (2.3 Gb, 10 chromosomes of about 300 Mb), `-t 20`, BED6, max
+memory (newest first):
+
+| pattern | after 0.4.0 | 0.4.0 |
+|---|---|---|
+| 00_DTC_published_2025 | 2.5 GB | 13.3 GB |
+| 02_DTA_short5to7 | 5.1 GB | 16.0 GB |
+| 02_DTA_short5to7 with `-o` (40 million hits) | 3.9 GB, 107 s | 97 GB, 222 s |
 
 22 TIR patterns of B. napus ([`tir_scan_patterns/`](tir_scan_patterns/README.md), for example
 `p1=8...8 p2=5...7 50...30000 ~p2 p1`), whole genome (1.0 Gb, bgzip),

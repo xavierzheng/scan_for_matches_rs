@@ -132,6 +132,31 @@ pub struct KIndex {
     pos: Vec<u32>,
 }
 
+/// The coded sequence of one strand of a long record, shared by all the
+/// engines that search its pieces (instead of a copy in each engine).  It
+/// is read only: the matcher only reads the sequence (a write would be a
+/// SIGSEGV, not a change seen by the other threads).
+pub struct SharedSeq {
+    /// start of the mapping: LOW_SLACK zero bytes, then the sequence
+    map: *mut u8,
+}
+
+// The mapping is read only after it is made, and unmapped on drop.
+unsafe impl Send for SharedSeq {}
+unsafe impl Sync for SharedSeq {}
+
+impl SharedSeq {
+    fn cd(&self) -> *mut u8 {
+        unsafe { self.map.add(LOW_SLACK as usize) }
+    }
+}
+
+impl Drop for SharedSeq {
+    fn drop(&mut self) {
+        crate::sys::unmap(self.map, (LOW_SLACK + CD_CAP) as usize);
+    }
+}
+
 /// A k-mer index shared by the engines that search pieces of one record
 /// strand (built by the first that needs it).
 pub type SharedIndex = std::sync::Arc<std::sync::OnceLock<KIndex>>;
@@ -936,6 +961,9 @@ pub struct Engine {
     cd_gen: u64,
     /// bytes of the coded sequence buffer used since `release_data`
     cd_hi: usize,
+    /// the engine's own coded sequence buffer (`mem.cd` points to a
+    /// `SharedSeq` while one is set)
+    own_cd: *mut u8,
     /// k-mer index of the coded sequence, built when first needed
     kidx: Option<KIndex>,
     /// used instead of `kidx` while searching a piece of a long record
@@ -1012,6 +1040,7 @@ impl Engine {
             revhits: Vec::with_capacity(256),
             cd_gen: 0,
             cd_hi: 0,
+            own_cd: cd_ptr,
             kidx: None,
             shared_kidx: None,
             index_threads: 1,
@@ -1175,6 +1204,7 @@ impl Engine {
 
     /// comp_data(data, cdata): translate characters to codes, stop at NUL.
     pub fn comp_data(&mut self, data: &Buf) {
+        self.set_shared_seq(None);
         self.cd_gen += 1;
         let n = data.v.iter().position(|&c| c == 0).expect("NUL at the end");
         self.cd_hi = self.cd_hi.max(n + 1);
@@ -1191,6 +1221,7 @@ impl Engine {
     /// Pattern letters are upper case, so the data is matched in upper
     /// case too (the output shows the data as it is).
     pub fn copy_data(&mut self, data: &Buf) {
+        self.set_shared_seq(None);
         self.cd_gen += 1;
         let mut k = 0usize;
         loop {
@@ -1204,15 +1235,50 @@ impl Engine {
         self.cd_hi = self.cd_hi.max(k + 1);
     }
 
+    /// Code `data` (up to its NUL) as `comp_data` / `copy_data` do, into a
+    /// new read-only buffer that engines can share (`set_shared_seq`).
+    pub fn shared_seq(&self, data: &Buf) -> SharedSeq {
+        let map = crate::sys::map_zeroed(0, (LOW_SLACK + CD_CAP) as usize);
+        let s = SharedSeq { map };
+        let n = data.v.iter().position(|&c| c == 0).expect("NUL at the end");
+        let cd = unsafe { std::slice::from_raw_parts_mut(s.cd(), n + 1) };
+        if self.seq_type == PEPTIDE {
+            for (d, &c) in cd[..n].iter_mut().zip(&data.v[..n]) {
+                *d = c.to_ascii_uppercase();
+            }
+        } else {
+            let mut t = [0u8; 256];
+            t[..128].copy_from_slice(&self.p2c_lo);
+            for (d, &c) in cd[..n].iter_mut().zip(&data.v[..n]) {
+                *d = t[c as usize];
+            }
+        }
+        cd[n] = 0;
+        crate::sys::protect_read_only(s.map, (LOW_SLACK + CD_CAP) as usize);
+        s
+    }
+
+    /// Search `seq` (None: the engine's own buffer again) from now on.
+    /// The caller keeps `seq` alive while it is set.
+    pub fn set_shared_seq(&mut self, seq: Option<&SharedSeq>) {
+        let cd = seq.map_or(self.own_cd, |s| s.cd());
+        if cd != self.mem.cd {
+            self.mem.cd = cd;
+            self.slow.cd = cd;
+            self.cd_gen += 1;
+        }
+    }
+
     /// Give the memory of the coded sequence and of the k-mer index back
     /// to the system (several patterns: an engine that is not used for a
     /// while must not hold a long record).  The next sequence is loaded
     /// again with `comp_data` / `copy_data`.
     pub fn release_data(&mut self) {
+        self.set_shared_seq(None);
         self.kidx = None;
         self.shared_kidx = None;
         self.cd_gen += 1;
-        crate::sys::release_pages(self.mem.cd, self.cd_hi.next_multiple_of(PAGE));
+        crate::sys::release_pages(self.own_cd, self.cd_hi.next_multiple_of(PAGE));
         self.cd_hi = 0;
     }
 

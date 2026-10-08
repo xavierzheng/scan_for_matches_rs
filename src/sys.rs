@@ -27,6 +27,8 @@ unsafe extern "C" {
         off: i64,
     ) -> *mut c_void;
     fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
+    fn mprotect(addr: *mut c_void, len: usize, prot: c_int) -> c_int;
+    fn munmap(addr: *mut c_void, len: usize) -> c_int;
 }
 
 const SIGSEGV: c_int = 11;
@@ -202,6 +204,18 @@ pub fn release_pages(p: *mut u8, len: usize) {
     if len > 0 {
         unsafe { madvise(p as *mut c_void, len, MADV_DONTNEED) };
     }
+}
+
+/// Make `len` bytes at `p` (page aligned) read only: a write is a
+/// SIGSEGV.
+pub fn protect_read_only(p: *mut u8, len: usize) {
+    const PROT_READ: c_int = 0x1;
+    unsafe { mprotect(p as *mut c_void, len, PROT_READ) };
+}
+
+/// Unmap memory from `map_zeroed`.
+pub fn unmap(p: *mut u8, len: usize) {
+    unsafe { munmap(p as *mut c_void, len) };
 }
 
 /// Zeroed read/write memory (address space only; pages are used when
