@@ -15,6 +15,13 @@ Less memory with `-t N`; the output does not change.
   At most 4 x N jobs are between the reader and the writer (finished
   pieces waited in memory behind a slow one).
 
+### Fixed
+- `--explain` / `--lint`: the 2nd and 3rd numbers of `[m,d,i]` were
+  called "inserts" and "deletes"; they are deletions (a pattern letter
+  missing in the data) and insertions (an extra letter in the data), as
+  in README.original.  The hit length range of `--explain` used them the
+  wrong way round.  The search itself did not change.
+
 Maize (2.3 Gb, bgzip), `-t 20`, BED6, max RSS, same output as 0.4.0:
 00_DTC 13.3 → 2.5 GB; 08_DTH_seed12 14.8 → 3.4 GB; 02_DTA_short5to7
 16.0 → 5.1 GB; 02_DTA_short5to7 with `-o` (40 million hits) 97 GB, 222 s

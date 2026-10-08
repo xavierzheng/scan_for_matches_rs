@@ -71,3 +71,17 @@ fn explain_and_option_errors() {
     assert_eq!(st, Some(2));
     assert!(err.contains("not both"));
 }
+
+/// `[m,d,i]` as in README.original: the 2nd number lets the data miss a
+/// letter (deletion), the 3rd lets it have an extra letter (insertion).
+#[test]
+fn explain_deletions_and_insertions() {
+    let p = pattern("di.pat", "ACGT[1,1,2]\n");
+    let (st, out, _) = run(&["--explain", &p]);
+    assert_eq!(st, Some(0));
+    assert!(
+        out.contains("ACGT, with up to 1 mismatch, 1 deletion, 2 insertions"),
+        "{out}"
+    );
+    assert!(out.contains("hit length: 3 to 6 letters"), "{out}");
+}

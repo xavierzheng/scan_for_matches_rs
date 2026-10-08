@@ -50,12 +50,14 @@ const N_NAMES: usize = MAX_NAMES as usize + 1;
 // ---------------------------------------------------------------------
 // the pattern units
 
-/// Mismatches, inserts and deletes of an inexact unit (`[m,i,d]`).
+/// Mismatches, deletions and insertions of an inexact unit (`[m,d,i]`,
+/// as in README.original): a deletion is a letter of the pattern missing
+/// in the data, an insertion an extra letter in the data.
 #[derive(Clone, Copy, Default, PartialEq)]
 struct Err3 {
     mis: i32,
-    ins: i32,
     del: i32,
+    ins: i32,
 }
 
 impl Err3 {
@@ -171,15 +173,15 @@ fn misinsdel(l: &[u8], p: usize) -> Option<(Err3, usize)> {
     if at(l, p) != b',' {
         return None;
     }
-    let (ins, p) = num(l, p + 1)?;
+    let (del, p) = num(l, p + 1)?;
     if at(l, p) != b',' {
         return None;
     }
-    let (del, p) = num(l, p + 1)?;
+    let (ins, p) = num(l, p + 1)?;
     if at(l, p) != b']' || mis < 0 || ins < 0 || del < 0 {
         return None;
     }
-    Some((Err3 { mis, ins, del }, p + 1))
+    Some((Err3 { mis, del, ins }, p + 1))
 }
 
 fn opt_errs(l: &[u8], p: usize) -> (Err3, usize) {
@@ -707,12 +709,13 @@ impl<'a> Pat<'a> {
     /// first unit of each branch).
     fn max_mat(&self, u: &Unit, depth: u32) -> i32 {
         match &u.kind {
-            Kind::Word(w, e) => (w.len() as i32).wrapping_add(e.ins),
+            // the engine adds the 2nd number (deletions), as the C code
+            Kind::Word(w, e) => (w.len() as i32).wrapping_add(e.del),
             Kind::Range(a, b) => a.wrapping_add(b.wrapping_sub(*a)),
             Kind::Any(..) => 1,
             Kind::Weight(_, rows, _) => rows.len() as i32,
             Kind::Compl(_, n, e) | Kind::Repeat(n, e) | Kind::Inv(n, e) => match self.named(*n) {
-                Some(d) if depth < 10_000 => self.max_mat(d, depth + 1).wrapping_add(e.ins),
+                Some(d) if depth < 10_000 => self.max_mat(d, depth + 1).wrapping_add(e.del),
                 _ => 0,
             },
             Kind::Or(a, b, ..) => {
@@ -945,8 +948,8 @@ fn errs_words(e: Err3) -> String {
         format!(
             "with up to {}, {}, {}",
             plural(e.mis as i64, "mismatch"),
-            plural(e.ins as i64, "insert"),
-            plural(e.del as i64, "delete")
+            plural(e.del as i64, "deletion"),
+            plural(e.ins as i64, "insertion")
         )
     }
 }
@@ -989,7 +992,7 @@ fn hint(l: &[u8], p: usize, pep: bool) -> Option<String> {
     };
     Some(match c {
         0 => "the pattern ends too early".into(),
-        b'[' => "write [mismatches,inserts,deletes] right after a word or a name, \
+        b'[' => "write [mismatches,deletions,insertions] right after a word or a name, \
                  with three numbers and no spaces: ACGT[1,0,0]"
             .into(),
         b'{' => "a weight unit is {(a,c,g,t),(a,c,g,t),...} > cutoff: rows of 4 numbers \
@@ -1211,7 +1214,7 @@ impl Checker<'_, '_> {
                     note,
                     at,
                     format!(
-                        "`{t}` has inserts and deletes: the matcher takes one greedy alignment \
+                        "`{t}` has deletions and insertions: the matcher takes one greedy alignment \
                      and can miss some matches"
                     ),
                 );
@@ -2278,7 +2281,7 @@ mod tests {
         fires(
             "p1=3...3 CACTA[0,0] p1",
             "error",
-            "[mismatches,inserts,deletes]",
+            "[mismatches,deletions,insertions]",
         );
         fires("AC 500-15000 GT", "error", "three dots");
         fires("(GAGA|GCGCA)", "error", "space before and after `|`");
@@ -2439,7 +2442,7 @@ mod tests {
         assert!(!err, "{e}");
         for w in [
             "any 3 letters; call them p1",
-            "the letters RCN, with up to 1 mismatch, 0 inserts, 0 deletes (R = A or G, N = any letter)",
+            "the letters RCN, with up to 1 mismatch, 0 deletions, 0 insertions (R = A or G, N = any letter)",
             "any 2 to 5 letters (the shortest length that works is used); call them p2",
             "one of two branches (branch 1 is searched first):",
             "or branch 2:",
@@ -2448,7 +2451,7 @@ mod tests {
             "the total length of p1 and p2 is less than 9",
             "the letters of p1 in reverse order (not complemented), exactly",
             "p2 read backwards, each letter paired with it by rule set r1",
-            "the reverse complement of p2, with up to 0 mismatches, 1 insert, 1 delete",
+            "the reverse complement of p2, with up to 0 mismatches, 1 deletion, 1 insertion",
             "the same letters as p1, exactly",
             "a gap of 5 letters (min > max: only length 5 is matched)",
             "the end of the sequence",

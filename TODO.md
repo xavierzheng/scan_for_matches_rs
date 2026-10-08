@@ -119,6 +119,13 @@
       reports each element twice with `-c` (`[a,b]` and `[b,a]`).
 - [ ] The pattern file is joined into one line (newlines become spaces)
       and cut at 31 999 bytes without a warning.
+- [ ] A name that caught `N` from the data (a range takes any letter)
+      works as a wildcard when it is used again (`p1`, `~p1`): each `N`
+      accepts any letter.  A TSD/TIR made of an assembly gap matches
+      anything (`p1=8...8 20...50 p1` hits `NNNNNNNNNN...` and random
+      letters).  Same in the C program.  Documented in PATTERNS.md
+      (common mistake 12); `--lint` cannot see it (it depends on the
+      data).  An option to drop such hits could be added.
 - [ ] A weight-matrix unit scores IUPAC codes and `N` in the data as
       averages of the matching weights, while all other units never
       match `N`.
