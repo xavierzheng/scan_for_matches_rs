@@ -15,7 +15,10 @@
 
 ## Platforms
 
-- [ ] Linux x86_64: decide if Linux needs its own reference.
+- [x] Linux x86_64: decide if Linux needs its own reference.
+      Decided 2026-10-09: no.  The results below (C program built on
+      Linux, CI on Linux) are the same as on macOS, except the 2
+      undefined-behaviour cases of 0.0.0.
       CI result (2026-10-01, GitHub `ubuntu-latest`, AMD EPYC 9V74 with
       AVX512; there is no SIMD code (0.2.0 compares 8 bases with plain
       64-bit integers), so CPU features do not matter):
@@ -84,40 +87,44 @@
 - [x] Bytes 0x80 and above in the data or pattern index `punit_to_code`
       with a negative (signed `char`) subscript and read other globals.
 
-## C. Odd behaviour (can be kept)
+## C. Odd behaviour (kept on purpose, decided 2026-10-09)
 
-- [ ] A pattern whose maximum match length is 0 (for example `^` alone or
+Not to do: these are the behaviour of the original C program, and the
+output stays the same as the C program.  A record, not a task list.
+`--lint` warns about several of them.
+
+- A pattern whose maximum match length is 0 (for example `^` alone or
       `0...0`) is reported as "failed to parse pattern".
-- [ ] The value of `-o N` is not used; the usage text is not correct
+- The value of `-o N` is not used; the usage text is not correct
       (`-n`/`-m` shown with values, `-o` without).
       (2026-10-08: `--help` now shows the correct options; the short
       usage text printed on an option error is still the old one.)
-- [ ] `length(...)` can use the last match length of a name from an
+- `length(...)` can use the last match length of a name from an
       earlier attempt or an earlier sequence, when that name has not been
       matched yet in the current attempt.
-- [ ] In an alternative `( | )`, the second alternative is not retried at
+- In an alternative `( | )`, the second alternative is not retried at
       later positions (dead branch for `alt == 2` in BACKTRACK); scanning
       relies on the first unit inside the alternative.
-- [ ] `-o` (overlapping hits) works on the forward strand only: with
+- `-o` (overlapping hits) works on the forward strand only: with
       `-c`, hits on the reverse strand never overlap (the C code always
       uses `cont_match` there).  The original README does not say this.
-- [ ] `-n`: the original README says `-n 10` limits the output to 10 hits,
+- `-n`: the original README says `-n 10` limits the output to 10 hits,
       but the C code (and its usage text) uses `-n N` as "stop after N
       sequences without a hit" and `-m N` as the hit limit.  Version 0.1.0
       follows the code.  Decide which meaning to keep, and correct the
       README or the code.
-- [ ] The inexact matcher always takes a matching character and never
+- The inexact matcher always takes a matching character and never
       tries to skip it with an insert/delete, so some valid alignments
       within the mismatch/insert/delete limits are not found (for example
       when an early match forces a later failure).  The original works the
       same way; a complete search would change results and speed.
-- [ ] A reversed range `a...b` with `a > b` is accepted without a
+- A reversed range `a...b` with `a > b` is accepted without a
       warning and matches only the length `a`.
-- [ ] `-o` takes a value, so `-o -c pattern` uses `-c` as that value:
+- `-o` takes a value, so `-o -c pattern` uses `-c` as that value:
       the reverse strand is not searched and there is no error.
-- [ ] A pattern that reads the same on both strands (all TIR patterns)
+- A pattern that reads the same on both strands (all TIR patterns)
       reports each element twice with `-c` (`[a,b]` and `[b,a]`).
-- [ ] The pattern file is joined into one line (newlines become spaces)
+- The pattern file is joined into one line (newlines become spaces)
       and cut at 31 999 bytes without a warning.
 - [x] A name that caught `N` from the data (a range takes any letter)
       works as a wildcard when it is used again as `p1` or `<p1` (not
@@ -125,7 +132,7 @@
       gap matches anything (`p1=8...8 20...50 p1` hits `NNNNNNNNNN...`
       and random letters).  Same in the C program; kept as the default.
       `--strict-n` (0.4.1) makes each such letter 1 mismatch.
-- [ ] A weight-matrix unit scores IUPAC codes and `N` in the data as
+- A weight-matrix unit scores IUPAC codes and `N` in the data as
       averages of the matching weights, while all other units never
       match `N`.
 
@@ -215,14 +222,16 @@ Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
       leave cores idle, and it saves little memory.  Output must not
       change.
 
-## Speed: known limits (0.2.0)
+## Speed: known limits (0.2.0; a record, no plan to change, 2026-10-09)
 
-- [ ] Gap skipping works only when the range is followed by an exact
+`--lint` gives a note for the slow wide gaps.
+
+- Gap skipping works only when the range is followed by an exact
       word, an exact `~pN`, `~pN[m,0,0]` or an exact `pN`.  A range
       followed by an inexact word, `pN` with errors, `~pN` with inserts
       or deletes, a weight matrix or another range is searched length by
       length (slow for wide ranges such as `50...30000`).
-- [ ] With `-t N` on many long records and a fast pattern, splitting
+- With `-t N` on many long records and a fast pattern, splitting
       long records into pieces is slower than one thread per record
       (each thread copied each long record, until the shared strands;
       not measured again; whole genome, 00_DTC `-c`:
@@ -234,5 +243,5 @@ Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
       about 300 kb (1 Mb pieces).  Fixed by an adaptive warm-up before
       each piece (02_DTA_short5to7 308 s → 106 s, 08_DTH_Tourist_seed8
       160 s → 35 s, B. napus, `-t 20`).
-- [ ] Each engine maps 4 GB of address space (`CD_CAP`) and never unmaps
+- Each engine maps 4 GB of address space (`CD_CAP`) and never unmaps
       it (fine for a command-line run).
