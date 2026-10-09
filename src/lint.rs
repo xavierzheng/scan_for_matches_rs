@@ -1861,7 +1861,12 @@ mod tests {
 
     fn tir_files() -> Vec<(String, Vec<u8>)> {
         let mut v = Vec::new();
-        for d in ["tir_scan_patterns", "tir_scan_patterns/labelled"] {
+        for d in [
+            "tir_scan_patterns",
+            "tir_scan_patterns/labelled",
+            "tir_scan_patterns/mm2",
+            "tir_scan_patterns/mm2/labelled",
+        ] {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(d);
             for e in std::fs::read_dir(dir).unwrap() {
                 let p = e.unwrap().path();
@@ -1871,7 +1876,7 @@ mod tests {
             }
         }
         v.sort();
-        assert_eq!(v.len(), 44);
+        assert_eq!(v.len(), 52);
         v
     }
 
