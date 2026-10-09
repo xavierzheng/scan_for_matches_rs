@@ -2,8 +2,8 @@
 
 Traditional Chinese version: [README_zh-TW.txt](README_zh-TW.txt).
 This file is an English translation of it (compiled 2026-09-30). The
-last section, "Use with this Rust port", is new and is not in the
-Chinese version.
+last two sections, "Use with this Rust port" and "Versions with
+mismatches", are new; the Chinese version has them as sections 7 and 8.
 
 ## Important: what these patterns are
 
@@ -302,7 +302,7 @@ ambiguity in indel direction and end coordinates.
 stores the test results and the SHA-256 of the source package. The
 download did not include program binaries, and no user genome was run.
 
-## Use with this Rust port (new; not in the Chinese version)
+## Use with this Rust port (new)
 
 - The `.pat` files above are unchanged.
 - `labelled/` holds copies of the 22 patterns with `%@` labels for
@@ -346,7 +346,7 @@ download did not include program binaries, and no user genome was run.
 - Speed of all 22 patterns on the 1.0 Gb *B. napus* genome: see
   `CHANGELOG.md`.
 
-## Versions with mismatches: `mm2/` (new; not in the Chinese version)
+## Versions with mismatches: `mm2/` (new)
 
 Old elements have mutations, so their two TIRs are no longer exact
 copies.  The 4 patterns with long TIRs (19-30 bp) have a copy in `mm2/`

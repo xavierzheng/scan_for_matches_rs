@@ -227,3 +227,64 @@ ACGT[0,0,1] 可匹配 ACAGT，但不能匹配 AGT。
 
 catalog.json 保存每個 pattern 的用途；validation.json 保存測試結果
 與來源套件 SHA-256。下載包不包含軟體可執行檔，也未執行使用者基因組。
+
+七、搭配本 Rust 版使用（新增）
+
+上面的 .pat 檔都沒有改。下面是本 Rust 版（scan_for_matches_rs）才有的
+功能，與「四、執行與後處理」中 C 原版的限制不同。
+
+labelled/：22 個 pattern 加上 %@ 標籤的複本，給 --format gff3、bed6、
+bed12、jsonl 用；標籤寫出元素、TSD 和 TIR 的名稱（見主 README 的
+"Output formats"）。不加 --format 時，結果和沒有標籤的檔案一樣。
+
+C 原版每條序列 250,000,000 nt 的上限已拿掉（0.1.0），不必再切段。
+
+-c：本套 pattern 兩條鏈的結構相同，加 -c 會讓每個元素在兩條鏈各找到
+一次；配合 --format 時加 --dedup，只留一份（strand 為 "."）。
+
+--strict-n（0.4.1）：沒有它時，TSD（p1）若從 assembly gap 抓到 N，
+另一端的 p1 會接受任何字母，所以 gap 旁會出現假的元素。加上它，抓到
+的每個非 A、C、G、T 字母算 1 個 mismatch；本套 TSD 不容許 mismatch，
+所以這種 hit 會被丟掉。有 gap 的基因組都應該加。
+
+範例（一個 pattern，bgzip 或一般 FASTA，8 個執行緒）：
+scan_for_matches -t 8 -c --dedup --strict-n --format gff3 --name-prefix DTC \
+    --input genome.fna.gz --output DTC.gff3 \
+    tir_scan_patterns/labelled/00_DTC_published_2025.pat
+每個 pattern 用不同的 --name-prefix（或 --name-start），Name 才不會重複。
+
+一次跑全部 pattern（0.4.0；基因組只讀一次），再合成一個檔案：
+scan_for_matches -t 20 -c --dedup --strict-n --format gff3 \
+    --input genome.fna.gz --output tir_all.gff3 tir_scan_patterns/labelled/*.pat
+scan_for_matches --merge --output tir_merged.gff3 tir_all.gff3
+--merge 在兩個元素範圍相同時留第一個（在前面的 pattern）；
+--overlap 0.9 也會合併彼此重疊 90 % 的元素。
+修改 pattern 後，可用 scan_for_matches --lint FILE.pat 檢查、
+--explain FILE.pat 說明。
+
+22 個 pattern 在 1.0 Gb 甘藍型油菜（B. napus）基因組上的速度：見
+CHANGELOG.md。
+
+八、容許 mismatch 的版本：mm2/（新增）
+
+老的元素有突變，兩端 TIR 已不是完全相同的複本。TIR 較長（19-30 bp）
+的 4 個 pattern 在 mm2/（無標籤）和 mm2/labelled/ 各有一份複本，右端
+TIR 容許最多 2 個替換：~p2 改成 ~p2[2,0,0]。TSD 和 G/C 末端仍要完全
+相同。原本 22 個檔案沒有改，labelled/*.pat 也不包含這些複本。
+
+mm2/ 的檔案                    真實 hit   真實 hit   打亂 hit   時間
+                               exact      mm2        mm2        exact → mm2
+03_DTM_G_seed20_mm2              885      1 285        0        3 s → 4 s
+03_DTM_unanchored_seed20_mm2   1 523      2 565        0        14 s → 27 s
+04_DTE_seed20_mm2              1 859      3 297        1        10 s → 23 s
+10_DMM_Maverick_seed30_mm2       290        568        0        4 s → 34 s
+
+測試資料：B. napus 染色體 A1-A3（約 100 Mb），-t 40 -c --dedup
+--strict-n --format gff3。「打亂」：同樣的染色體，每 10 kb 內把字母
+打亂（真的元素已經不在），所以在那裡找到的 hit 是隨機的；exact 版本
+是 0 個。有標籤和沒標籤的檔案結果相同。
+
+TIR 較短（5-15 bp）的 pattern 不要加 mismatch：同一個測試中，1 個
+mismatch 讓隨機 hit 的比例升到 8-33 %（12-15 bp），或讓 hit 大多是隨機
+的（5-8 bp）。mm2 檔可以和 exact 檔一起跑，或取代它；一起跑時，用
+--merge 去掉被找到兩次的元素。
