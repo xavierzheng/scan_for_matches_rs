@@ -832,8 +832,9 @@ impl<'a> Pat<'a> {
     }
 
     /// `n` (after a wide range) is not `~pK[m,0,0]`, or the engine finds
-    /// its gap lengths by an index lookup: 5 exact plain letters follow
-    /// (`rest`).  Else every gap length is checked.
+    /// its gap lengths by index lookups: pK has at least 5 x (m + 1)
+    /// letters (seeds), or 5 exact plain letters follow (`rest`).  Else
+    /// every gap length is checked.
     fn looked_up(&self, n: &Unit, rest: &[Unit]) -> bool {
         let Kind::Compl(None, k, e) = &n.kind else {
             return true;
@@ -841,8 +842,10 @@ impl<'a> Pat<'a> {
         if e.mis == 0 {
             return true;
         }
-        let _ = k;
         let len = |k: i32| self.named(k).map(|d| self.len_range(d, 0));
+        if len(*k).is_some_and(|(lo, _)| lo >= 5 * (e.mis as i64 + 1)) {
+            return true;
+        }
         let mut run = 0;
         for u in rest {
             match &u.kind {
@@ -1319,8 +1322,8 @@ impl Checker<'_, '_> {
         for (r, n) in slow {
             let why = if skip && pat.skippable(n, r) {
                 format!(
-                    "`{}` has mismatches and fewer than 5 exact letters after it: \
-                     put 5 exact letters after it, or make the gap narrower",
+                    "`{}` has mismatches and too few letters to look up: give the name \
+                     at least 5 letters per allowed mismatch + 5, or put 5 exact letters after it",
                     pat.text(n)
                 )
             } else if skip {
@@ -2451,15 +2454,20 @@ mod tests {
         fires("50...30000 AC[1,0,0]", "note", "slow");
         fires("r1={au} p1=5...5 50...30000 r1~p1", "note", "slow");
         fires("p1=5...5 50...30000 ~p1[0,1,0]", "note", "slow");
-        // ~pN[m,0,0]: fast only with 5 exact letters after it
+        // ~pN[m,0,0]: index seeds need 5 x (m + 1) letters, or 5 exact after
         fires(
-            "TA p2=12...12 50...30000 ~p2[1,0,0] TA",
+            "TA p2=8...8 50...30000 ~p2[1,0,0] TA",
             "note",
-            "fewer than 5 exact letters after it",
+            "too few letters to look up",
         );
-        fires("p2=20...20 50...30000 ~p2[2,0,0] ACG", "note", "slow");
+        fires("p2=12...12 50...30000 ~p2[2,0,0] ACG", "note", "slow");
+        fires("p2=8...12 50...30000 ~p2[1,0,0]", "note", "slow");
         for p in [
             "TA p2=12...12 50...30000 ~p2 TA",
+            "p2=10...10 50...30000 ~p2[1,0,0] TA",
+            "p2=15...15 50...30000 ~p2[2,0,0]",
+            "TA p2=12...12 50...30000 ~p2[1,0,0] TA",
+            "p2=10...14 50...30000 ~p2[1,0,0]",
             "p2=12...12 50...30000 ~p2[2,0,0] ACGTA",
             "p1=3...3 p2=7...7 50...30000 ~p2[1,0,0] TAGTG p1",
             "p1=8...8 p2=7...7 50...30000 ~p2[1,0,0] p1",
@@ -2499,7 +2507,7 @@ mod tests {
         assert!(!lint_s("p1=ACG 0...5 p1").contains("--strict-n"));
         // no false notes
         for p in [
-            "p1=10...10 50...30000 ~p1[1,0,0] ACGTA",
+            "p1=10...10 50...30000 ~p1[1,0,0] AC",
             "p1=3...3 50...30000 p1",
             "ACGT[1,1,0] 50...30000 GT 0...2",
             "AC 50...30000",

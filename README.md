@@ -308,7 +308,7 @@ No input is read.  Several pattern files can be given.
     text cut at 31 999 bytes, mismatches >= word length, `-o -c` (`-c`
     becomes the value of `-o`), `-c` without `--dedup` for a pattern that
     reads the same on both strands (every element found twice);
-  - notes: a wide gap that cannot skip gap lengths (slow; also a
+  - notes: a wide gap that cannot skip gap lengths (slow; also a short
     `~pN[m,0,0]` with fewer than 5 exact letters after it), `<pN` (reverse,
     not reverse complement), `pN` / `<pN` of a range name without
     `--strict-n` (a caught `N` matches any letter), `pN=a...b` uses the shortest length that

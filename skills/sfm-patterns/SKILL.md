@@ -112,11 +112,11 @@ The TIR transposon, unit by unit:
 8. **Mismatches ≥ length match anything**: `ACG[3,0,0]`.
 9. **Speed after a wide gap** (a gap of a few hundred is fine either
    way).  Fast: the gap is followed by an exact word, an exact `p1`, an
-   exact `~p1`, or `~p1[m,0,0]` (mismatches only) when 5 exact letters
-   follow it (`~p2[1,0,0] TAGTG`, or a TSD `p1` of 5+ letters).  Slow: a
-   word with errors (`TAGTG[1,0,0]`), `p1[1,0,0]`, any unit with
-   deletions/insertions, or `~p2[m,0,0]` with fewer than 5 exact letters
-   after it.  `--lint` says "slow"
+   exact `~p1`, or `~p1[m,0,0]` (mismatches only) when `p1` has at least
+   5 x (m + 1) letters (10 for `[1,0,0]`) or 5 exact letters follow it
+   (`~p2[1,0,0] TAGTG`).  Slow: a word with errors (`TAGTG[1,0,0]`),
+   `p1[1,0,0]`, any unit with deletions/insertions, or a short
+   `~p2[m,0,0]` with few exact letters after it.  `--lint` says "slow"
    for each of these.  So put the mismatches on the `~p2[m,0,0]` right
    after the gap, and keep the words exact.
 10. **Hits do not overlap**: after a hit the search goes on after its end.

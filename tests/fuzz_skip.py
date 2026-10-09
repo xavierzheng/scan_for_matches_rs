@@ -11,7 +11,7 @@ or of the range), which `next_start` checks together.
 
 --tir: TIR patterns whose reverse complement allows mismatches
 (`p2=10...24 60...8000 ~p2[1,0,0]`, 1 to 3 mismatches, few exact letters
-after it): the gap skipping with tolerant masks.
+after it), so gap lengths are found by index seeds of the tolerant part.
 """
 import os
 import random

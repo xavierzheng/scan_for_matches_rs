@@ -2105,6 +2105,8 @@ impl Engine {
     /// `None`: it never matches.  Only the first `max` masks are made: a
     /// prefix is enough, the matcher checks the rest (and making all of
     /// them costs more than it saves when the unit is long).
+    // not inlined: inside next_start_far it slows the masks_match_at loop by ~11%
+    #[inline(never)]
     fn unit_masks(&mut self, n: i64, range: i64, max: usize) -> Option<Option<()>> {
         let mut masks = std::mem::take(&mut self.masks);
         masks.clear();
@@ -2301,6 +2303,11 @@ impl Engine {
             None
         };
         let Some(ko) = key_at else {
+            if xhi - xlo >= SCAN_LIMIT
+                && let Some(x) = self.next_start_seeds(xlo, xhi, er)
+            {
+                return x;
+            }
             self.set_checks(tol, None);
             return (xlo..=xhi).find(|&x| self.masks_match_at(x, er));
         };
@@ -2336,6 +2343,79 @@ impl Engine {
             }
         }
         None
+    }
+
+    /// `next_start_far` without an index key after the tolerant part:
+    /// seeds.  With at most mask_mis mismatches in masks[..mask_tol], one
+    /// of mask_mis + 1 blocks of it matches exactly, so every start has
+    /// the first KIDX_K masks of one block in place: the starts are taken
+    /// from the index lists of these keys, in increasing order.  None: no
+    /// seeds (a block shorter than KIDX_K, or not plain bases).
+    #[inline(never)]
+    fn next_start_seeds(&mut self, xlo: i64, xhi: i64, er: i64) -> Option<Option<i64>> {
+        if self.mask_mis <= 0 {
+            return None;
+        }
+        let parts = self.mask_mis as usize + 1;
+        let bs = self.mask_tol / parts;
+        if bs < KIDX_K {
+            return None;
+        }
+        let seeds: Vec<usize> = (0..parts).map(|b| b * bs).collect();
+        if !seeds.iter().all(|&k| {
+            self.masks[k..k + KIDX_K]
+                .iter()
+                .all(|&mk| base2(mk).is_some())
+        }) {
+            return None;
+        }
+        self.set_checks(self.mask_tol, None);
+        let base = self.mem.cd as i64;
+        if self.shared_kidx.is_none() {
+            self.build_kidx(er);
+        }
+        let idx = match &self.shared_kidx {
+            Some(sh) => sh.get_or_init(|| {
+                let n = (er - base + 1).max(0) as usize;
+                let seq = unsafe { std::slice::from_raw_parts(self.mem.cd as *const u8, n) };
+                build_index_par(seq, self.index_threads)
+            }),
+            None => self.kidx.as_ref().unwrap(),
+        };
+        // for each seed: the positions where its key matches, from xlo on
+        // (the key of a start x is at x + ko)
+        let mut lists: Vec<(&[u32], i64)> = seeds
+            .iter()
+            .map(|&ko| {
+                let key = self.masks[ko..ko + KIDX_K]
+                    .iter()
+                    .fold(0u32, |key, &mk| key << 2 | base2(mk).unwrap());
+                let list = &idx.pos
+                    [idx.starts[key as usize] as usize..idx.starts[key as usize + 1] as usize];
+                let lo = (xlo - base + ko as i64) as u32;
+                (&list[list.partition_point(|&p| p < lo)..], base - ko as i64)
+            })
+            .collect();
+        loop {
+            let Some(x) = lists
+                .iter()
+                .filter_map(|(l, off)| l.first().map(|&p| off + p as i64))
+                .min()
+            else {
+                return Some(None);
+            };
+            if x > xhi {
+                return Some(None);
+            }
+            if self.masks_match_at(x, er) {
+                return Some(Some(x));
+            }
+            for (l, off) in lists.iter_mut() {
+                if l.first().is_some_and(|&p| *off + p as i64 == x) {
+                    *l = &l[1..];
+                }
+            }
+        }
     }
 
     /// Build the k-mer index of the current coded sequence (up to `er`).
