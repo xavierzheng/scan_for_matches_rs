@@ -5,13 +5,19 @@
 - [x] `--lint` and `--explain` for patterns (0.4.0).
 - [x] Merge tool: several patterns/runs → genome-wide unique Names
       (`--merge`, 0.4.0).
-- [ ] `--format`: a hit of length 0 is written only in JSON lines (GFF3
-      and BED have no place for it).
+- [x] `--format`: a hit of length 0 is written only in JSON lines (GFF3
+      and BED have no place for it).  Closed 2026-10-09: kept this way (a
+      hit with no letters is of no use in GFF3/BED); written in the
+      README.
 - [x] Several patterns in one run (read the genome once) (0.4.0).
 - [x] Converter JASPAR matrix → integer weight unit with a p-value
       cutoff (`tools/jaspar2sfm.py`, 0.4.0).
-- [ ] A pattern-writing skill for small models (JSON slot spec → pattern)
-      and `--synth` test sequences.
+- [x] A pattern-writing skill for AI assistants
+      (`skills/sfm-patterns/SKILL.md`, 2026-10-09).  The user adds it to
+      the assistant they use; this project does not host any model.
+      Tested: Claude Haiku with only the skill, 10 tasks, 10 correct
+      (graded with the binary on planted and broken sites).
+- [ ] `--synth`: make test sequences with a planted element for a pattern.
 
 ## Platforms
 

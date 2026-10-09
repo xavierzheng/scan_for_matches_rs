@@ -11,7 +11,8 @@ inexact matches, weight matrices, alternatives, length limits, `^`/`$`,
 **New to the pattern language?  Start with [`PATTERNS.md`](PATTERNS.md)**:
 a guide with templates, diagrams, tested examples, common mistakes and a
 glossary.  The original documentation is
-[`README.original`](README.original).
+[`README.original`](README.original).  To let an AI assistant write
+patterns for you, see [AI assistant skill](#ai-assistant-skill).
 
 ## Quick start
 
@@ -245,6 +246,10 @@ chr1  scan_for_matches  target_site_duplication               78  80  .  +  .  I
   one run: one counter for each Name prefix).  To join separate runs,
   use `--merge` (below), or give each run its own `--name-prefix`.
 
+A hit of length 0 (possible only when every unit can be empty, for
+example the pattern `0...2`) has no letters, so GFF3 and BED leave it
+out; JSON lines write it (end = start - 1).  It still counts for `-m`.
+
 BED6: `chrom start-1 end Name 0 strand`, one line per hit.  BED12: the
 blocks are the labelled parts (the line spans them), the thick part is
 the element without TSDs; without labels, one block = the hit.
@@ -397,6 +402,29 @@ cguaacc ggttaacc gguuacg
 >tst2:[6,27]
 CGUAACC GGTTAACC GGUUACG 
 ```
+
+### AI assistant skill
+
+[`skills/sfm-patterns/SKILL.md`](skills/sfm-patterns/SKILL.md) teaches an
+AI assistant to write, check and explain patterns: the units, templates,
+the common mistakes, labels, and how to check and run a pattern.  It is
+one Markdown file and needs no other file.  Add it to the assistant you
+already use; this project does not set up or host any model.
+
+* Claude Code: copy the folder `skills/sfm-patterns/` to
+  `~/.claude/skills/` (all projects) or `.claude/skills/` (one project).
+* Other assistants that read skill folders or instruction files (Codex,
+  claude.ai, ChatGPT projects or custom GPTs, ...): add `SKILL.md` the
+  way your assistant takes skills, instructions or knowledge files.
+
+When the assistant can run commands, it checks its pattern with
+`--explain`, `--lint` and a small planted test sequence.  In a chat app
+it cannot: it gives you these commands, and you send it the output.
+
+Tested: a small model (Claude Haiku) that read only `SKILL.md` wrote
+patterns for 10 tasks (hairpins, TSD/TIR transposons, direct repeats, an
+RNA stem with G-U pairs, a protein motif, alternatives); all found the
+planted site and not the broken copy.
 
 ## Differences from the original C program
 
@@ -576,6 +604,7 @@ speed, so more than 4 threads gains little on this machine.
 * `src/lint.rs` – `--lint` and `--explain`
 * `src/merge.rs` – `--merge`
 * `tools/jaspar2sfm.py` – JASPAR matrix → weight unit
+* `skills/sfm-patterns/SKILL.md` – skill for AI assistants that write patterns
 * `src/gz.rs` – gzip / bgzip input (system zlib; bgzip blocks in threads)
 * `src/sys.rs` – the few C library calls used (`getopt`, `sscanf`, stdio
   output, signals, `mmap`)
