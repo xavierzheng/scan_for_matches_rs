@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 — 2026-10-09
 
-Less memory with `-t N`; the output does not change.
+`--strict-n` against false hits at assembly gaps; less memory with
+`-t N`.  Without `--strict-n` the output is the same as 0.4.0 (only the
+version in the GFF3 header line changes).
 
 ### Faster
 - `-t N`: the two strands of a long record (letters and coded sequence)
@@ -16,6 +18,17 @@ Less memory with `-t N`; the output does not change.
   pieces waited in memory behind a slow one).
 
 ### New
+- `--strict-n` (DNA only; off by default).  A range takes any letter, so
+  a name can catch `N` (or `R`, `Y`, ...) from the data; when `p1` or
+  `<p1` uses the name again, that letter accepted any letter (as in the C
+  program), so a TSD made of `N` matched anything.  With `--strict-n`,
+  each caught letter that is not A, C, G, T counts as 1 mismatch; the
+  mismatches the pattern allows decide (`p1`: none, so the hit is gone;
+  `p1[1,0,0]`: one `N` is allowed).  `~p1` never matched a caught `N`
+  and does not change.  The rule is in the search (also gap skipping and
+  `-t N`), not a filter after it, so a false hit does not hide a real
+  element next to it.  Table of cases: README, "Assembly gaps".
+- `--lint`: a note for `p1` / `<p1` of a range name without `--strict-n`.
 - `PATTERNS.md`: a guide to the pattern language for biology students
   (templates, diagrams, tested examples, common mistakes, glossary), with
   `examples/te.fa`.  Tested: a model given only the guide wrote correct
@@ -29,6 +42,22 @@ Less memory with `-t N`; the output does not change.
   missing in the data) and insertions (an extra letter in the data), as
   in README.original.  The hit length range of `--explain` used them the
   wrong way round.  The search itself did not change.
+
+`--strict-n` on real genomes (`-t 20`): B. napus, 22 TIR patterns, `-c
+--dedup --format gff3`: 11 of the 22 patterns change; 468 hits with an
+`N` in their span go away (most in 02_DTA_seed8: 311 of 99 170).  Other
+hits next to them move (the chain of non-overlapping hits after a
+removed hit changes): 668 spans go and 818 come in.  Maize, BED6, hits
+with `N` removed: 02_DTA_short5to7 56, 08_DTH_seed12 1, 00_DTC 0.  Time
+and memory as without the option.  Without it, all
+25 outputs are byte-identical to 0.4.0.
+
+Tests: `cargo test --release`; `tests/fuzz_strict_n.py` 2 x 3000 cases
+against a separate reference (with and without the option): all equal;
+`fuzz_threads` 2 x 1000, `FUZZ_STRICT_N=1` 1000 + 500 with `--format`,
+`FUZZ_FORMAT=1` 500: 0 DIFF (only timeouts); `fuzz_compare --compat`
+against the C program 2 x 10 000: all equal; `fuzz_skip` (0.1.0 vs
+this) plain 800 + `--chain` 1000: 0 DIFF, 0 NEW-timeout.
 
 Maize (2.3 Gb, bgzip), `-t 20`, BED6, max RSS, same output as 0.4.0:
 00_DTC 13.3 → 2.5 GB; 08_DTH_seed12 14.8 → 3.4 GB; 02_DTA_short5to7

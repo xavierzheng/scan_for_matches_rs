@@ -42,6 +42,8 @@ pub struct RunOpts {
     pub format: bool,
     /// the value given to `-o` (None: no `-o`)
     pub o_value: Option<Vec<u8>>,
+    /// `--strict-n`
+    pub strict_n: bool,
 }
 
 const MAX_NAMES: i32 = 50;
@@ -1193,6 +1195,23 @@ impl Checker<'_, '_> {
                 ),
                 _ => {}
             }
+            // a range catches N from the data; p1 / <p1 then match any letter there
+            if let Kind::Repeat(n, _) | Kind::Inv(n, _) = &u.kind
+                && !self.o.strict_n
+                && !pat.ps.pep
+                && pat
+                    .named(*n)
+                    .is_some_and(|d| matches!(d.kind, Kind::Range(..)))
+            {
+                self.add(
+                    note,
+                    at,
+                    format!(
+                        "`{t}`: an N that p{n} caught from the data matches any letter here \
+                     (false hits at assembly gaps); add --strict-n for genomes with gaps"
+                    ),
+                );
+            }
             let (e, fixed) = match &u.kind {
                 Kind::Word(w, e) => (*e, Some(w.len() as i64)),
                 Kind::Compl(_, n, e) | Kind::Repeat(n, e) | Kind::Inv(n, e) => {
@@ -1744,6 +1763,7 @@ mod tests {
             dedup: false,
             format: false,
             o_value: None,
+            strict_n: false,
         }
     }
 
@@ -2399,6 +2419,14 @@ mod tests {
             "p2 is defined but not used",
         );
         fires("AC 0...5 GT", "note", "reads the same");
+        fires("p1=3...3 0...5 p1", "note", "add --strict-n");
+        fires("p1=3...3 0...5 <p1", "note", "add --strict-n");
+        let mut o = opts(false);
+        o.strict_n = true;
+        assert!(!lint_o("p1=3...3 0...5 p1", &o).0.contains("--strict-n"));
+        // ~p1 never matches a caught N; a word cannot catch N
+        assert!(!lint_s("p1=3...3 0...5 ~p1").contains("--strict-n"));
+        assert!(!lint_s("p1=ACG 0...5 p1").contains("--strict-n"));
         // no false notes
         for p in [
             "p1=10...10 50...30000 ~p1[1,0,0] AC",

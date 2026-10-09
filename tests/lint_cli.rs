@@ -33,12 +33,13 @@ fn lint_tir_pattern() {
     let (st, out, err) = run(&["--lint", DTC]);
     assert_eq!(st, Some(0), "{err}");
     assert!(out.contains("note: the pattern reads the same on both strands"));
-    assert!(out.ends_with("0 errors, 0 warnings, 1 notes\n"), "{out}");
+    assert!(out.contains("add --strict-n"), "{out}");
+    assert!(out.ends_with("0 errors, 0 warnings, 2 notes\n"), "{out}");
     // -c without --dedup: a warning; with --dedup (no --format needed): none
     let (st, out, _) = run(&["--lint", "-c", DTC]);
     assert_eq!(st, Some(0));
-    assert!(out.ends_with("0 errors, 1 warnings, 0 notes\n"), "{out}");
-    let (st, out, err) = run(&["--lint", "-c", "--dedup", DTC]);
+    assert!(out.ends_with("0 errors, 1 warnings, 1 notes\n"), "{out}");
+    let (st, out, err) = run(&["--lint", "-c", "--dedup", "--strict-n", DTC]);
     assert_eq!(st, Some(0), "{err}");
     assert!(out.ends_with("0 errors, 0 warnings, 0 notes\n"), "{out}");
 }

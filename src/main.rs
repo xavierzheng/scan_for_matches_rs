@@ -1363,6 +1363,10 @@ output formats (default: the original output):
   --name-start N     first number (default 1)
   --type T           column 3 of the element (default: the %@element type,
                      else sequence_motif)
+  --strict-n         a letter other than A, C, G, T (N, R, Y, ...) that a
+                     name caught is 1 mismatch when p1 or <p1 uses the name
+                     again (default: it matches any letter, as in the
+                     original program); against false hits at assembly gaps
   --dedup            with -c: a reverse-strand hit with the same span as a
                      forward hit is dropped; the element gets strand .
 
@@ -1380,7 +1384,7 @@ Note: -i and -o are the options of the original program (ids to skip,
 overlapping hits), not input and output.
 
 example:
-  scan_for_matches -t 8 -c --dedup --format gff3 --name-prefix DTC \\
+  scan_for_matches -t 8 -c --dedup --strict-n --format gff3 --name-prefix DTC \\
       --input genome.fna.gz --output DTC.gff3 DTC.pat
 
 Pattern language and labels: see README.md.
@@ -1592,7 +1596,7 @@ fn real_main() {
                 "input",
                 "output",
             ],
-            &["dedup", "help", "lint", "explain"],
+            &["dedup", "help", "lint", "explain", "strict-n"],
         )
         .unwrap_or_else(|e| long_error(&e));
     // -h only as an option of its own, not as the value of an option
@@ -1618,8 +1622,12 @@ fn real_main() {
     let mut output_path: Option<Vec<u8>> = None;
     let mut fmt_opts = 0;
     let (mut do_lint, mut do_explain) = (false, false);
+    let mut strict_n = false;
     for (name, v) in &long {
-        if !matches!(name.as_str(), "input" | "output" | "lint" | "explain") {
+        if !matches!(
+            name.as_str(),
+            "input" | "output" | "lint" | "explain" | "strict-n"
+        ) {
             fmt_opts += 1;
         }
         match name.as_str() {
@@ -1641,6 +1649,7 @@ fn real_main() {
             "type" => fopts.typ = Some(v.clone()),
             "lint" => do_lint = true,
             "explain" => do_explain = true,
+            "strict-n" => strict_n = true,
             _ => fopts.dedup = true,
         }
     }
@@ -1716,6 +1725,10 @@ fn real_main() {
         eprintln!("-c (complementary strand) cannot be used with -p (protein sequences)");
         usage(errflag, optind, argc);
     }
+    if strict_n && protein {
+        long_error("--strict-n is for DNA; it cannot be used with -p");
+    }
+    engine::set_strict_n(strict_n);
     // one or more pattern files
     let pat_files: Vec<(Vec<u8>, std::fs::File)> = (optind as usize..argc as usize)
         .map(|i| {
@@ -1746,6 +1759,7 @@ fn real_main() {
             dedup: fopts.dedup,
             format: format.is_some(),
             o_value,
+            strict_n,
         };
         lint_patterns(&pats, do_lint, &ro);
     }

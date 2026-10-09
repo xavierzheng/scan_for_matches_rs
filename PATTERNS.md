@@ -2,7 +2,7 @@
 
 This guide teaches the pattern language of `scan_for_matches`. It is for biology students who have never used the tool. You need no programming skills. You need a terminal and a small text editor.
 
-All commands and outputs in this guide are real. They were run with version 0.4.0 of the Rust port. In the examples, `scan_for_matches` is the name of the program.
+All commands and outputs in this guide are real. They were run with version 0.4.1 of the Rust port. In the examples, `scan_for_matches` is the name of the program.
 
 For the full original text (1990s), read [README.original](README.original). For all options and output formats, read [README.md](README.md).
 
@@ -392,7 +392,7 @@ $ scan_for_matches p.pat < s.fa
 ATCT  GTCTTT ATCT T GTCTTT 
 ```
 
-Watch out: a name can catch `N` letters (assembly gaps), and then it works like a wildcard (see [mistake 12](#12-n-assembly-gaps-inside-a-name)). A bare `p1` repeats the letters in the same direction. For a reverse complement, use `~p1`. For a reverse, use `<p1`.
+Watch out: a name can catch `N` letters (assembly gaps). Then `p1` and `<p1` accept any letter there, unless you use `--strict-n` (see [mistake 12](#12-n-assembly-gaps-inside-a-name)). A bare `p1` repeats the letters in the same direction. For a reverse complement, use `~p1`. For a reverse, use `<p1`.
 
 ## Reverse complement
 
@@ -911,8 +911,11 @@ The element is at 201 to 830, as planted. The pattern checks itself with `--lint
 ```
 $ scan_for_matches --lint cacta1.pat
 cacta1.pat: note: the pattern reads the same on both strands: with -c, every element is found twice; use --dedup
-0 errors, 0 warnings, 1 notes
+cacta1.pat:1: note: `p1`: an N that p1 caught from the data matches any letter here (false hits at assembly gaps); add --strict-n for genomes with gaps
+0 errors, 0 warnings, 2 notes
 ```
+
+The second note is about assembly gaps: see [mistake 12](#12-n-assembly-gaps-inside-a-name).
 
 **Step 6.** Add labels to get GFF3.
 
@@ -942,12 +945,12 @@ unit  line  text         meaning
 7     6     p1           the same letters as p1, exactly   [label: target_site_duplication]
 ```
 
-Run with `-c --dedup --format gff3`. (Only columns 1 and 3 to 9 are shown, and the last column is shortened.)
+Run with `-c --dedup --strict-n --format gff3`. (Only columns 1 and 3 to 9 are shown, and the last column is shortened.)
 
 ```
-$ scan_for_matches -c --dedup --format gff3 cacta.pat < te.fa | cut -f1,3-9 | cut -c1-135
+$ scan_for_matches -c --dedup --strict-n --format gff3 cacta.pat < te.fa | cut -f1,3-9 | cut -c1-135
 ##gff-version 3
-# scan_for_matches 0.4.0 pattern=cacta.pat
+# scan_for_matches 0.4.1 pattern=cacta.pat
 ##sequence-region chr1 1 980
 chr1	repeat_region	201	830	.	.	.	ID=DTC1;Name=DTC1;Classification=TIR/DTC;Method=structural;...
 chr1	target_site_duplication	201	203	.	.	.	ID=DTC1.lTSD;Parent=DTC1;Name=DTC1;...
@@ -1093,7 +1096,7 @@ A wide range, like `500...15000`, followed by an exact word is fast. The program
 
 ```
 $ echo 'p1=3...3 CACTA p2=7...7 500...15000 TAGTG[1,0,0] ~p2 p1' > w9.pat
-$ scan_for_matches --lint w9.pat
+$ scan_for_matches --lint --strict-n w9.pat
 w9.pat:1: note: slow: each gap length of `500...15000` is tried (`TAGTG[1,0,0]` after it cannot be used to skip gap lengths)
 0 errors, 0 warnings, 1 notes
 ```
@@ -1150,10 +1153,11 @@ Watch out: with `-o` you may get a very large output for a loose pattern.
 
 An `N` in the data never matches a word. But a name can catch `N`
 letters, because a range takes any letter.  When the name is used
-again (`p1`, `~p1`), each caught `N` works like the pattern letter `N`:
-it accepts any letter.  So a TSD or TIR made of `N` "matches" anything,
-and you get false hits next to assembly gaps.  `--lint` cannot see this,
-because it depends on the data.
+again as `p1` or `<p1`, each caught `N` works like the pattern letter `N`:
+it accepts any letter.  So a TSD made of `N` "matches" anything, and you
+get false hits next to assembly gaps.  The same is true for the other
+IUPAC codes (`R`, `Y`, ...) in the data.  (`~p1` is safe: it never
+matches a name that caught `N`.)
 
 ```
 $ echo 'p1=8...8 20...50 p1' > n.pat
@@ -1161,11 +1165,32 @@ $ printf '>gap\nNNNNNNNNNNACGTACGTACGTACGTACGTGGCATTGACC\n' > n.fa
 $ scan_for_matches n.pat < n.fa
 >gap:[1,36]
 NNNNNNNN NNACGTACGTACGTACGTAC GTGGCATT 
+$ scan_for_matches --strict-n n.pat < n.fa | wc -l
+0
 ```
 
-Right: remove hits whose named parts contain `N` after the search
-(for example from the `TSD=` / `TIR=` values of the GFF3 output), or
-mask the gaps first.
+Right: use `--strict-n` for genomes with gaps.  The rule has one
+sentence: **with `--strict-n`, each letter that a name caught and that is
+not A, C, G or T counts as 1 mismatch when `p1` or `<p1` uses the name
+again.**  The mismatches the pattern allows (`[m,0,0]`) decide if the
+hit stays.  There is no other limit.
+
+| pattern | the name caught | the data there | without `--strict-n` | with `--strict-n` |
+|---|---|---|---|---|
+| `p1=3...3 7...7 p1` (exact TSD) | `GAT` | `GAT` | hit | hit |
+| `p1=3...3 7...7 p1` (exact TSD) | `GNT` (1 N) | `GAT` | hit | no hit |
+| `p1=4...4 6...6 p1[1,0,0]` | `GNTA` (1 N) | `GCTA` | hit | hit (the N uses the 1 mismatch) |
+| `p1=4...4 6...6 p1[1,0,0]` | `GNNA` (2 N) | `GCTA` | hit | no hit |
+| `p1=4...4 6...6 p1[1,0,0]` | `GNTA` (1 N) | `GCTT` (1 more mismatch) | hit | no hit |
+| `p1=4...4 6...6 p1[1,0,0]` | `GRTA` (1 R) | `GCTA` | hit | hit (R is like N) |
+| `p1=4...4 6...6 <p1` | `GNTA` (1 N) | `ATCG` | hit | no hit |
+| `p1=4...4 6...6 ~p1[1,0,0]` | `GNTA` (1 N) | `TAGC` | no hit | no hit (as before) |
+| `p1=4...4 6...6 p1` | `GCTA` | `GCTA`, `N` in the gap | hit | hit (a gap may contain N) |
+
+`--strict-n` works inside the search: a false hit does not hide a real
+element next to it.  Without `--strict-n`, the output is the same as in
+the original C program.  `--lint` gives a note for each `p1` / `<p1` that
+uses a range name, until you add `--strict-n`.
 
 ## Options used in this guide
 
@@ -1178,6 +1203,7 @@ mask the gaps first.
 | `-t N` | use N threads (CPU cores); the output does not change |
 | `--format gff3` | write GFF3 (also `bed6`, `bed12`, `jsonl`) instead of the original output |
 | `--dedup` | with `-c` and `--format`: report an element found on both strands once |
+| `--strict-n` | an `N` (or other non-ACGT letter) that a name caught is 1 mismatch when `p1` / `<p1` uses the name again; use it for genomes with gaps ([mistake 12](#12-n-assembly-gaps-inside-a-name)) |
 | `--explain`, `--lint` | describe or check a pattern; no sequence is read |
 
 All options: `scan_for_matches --help` and [README.md](README.md).
@@ -1194,10 +1220,10 @@ $ scan_for_matches --explain cacta1.pat
 hit length: 530 to 15030 letters
 ```
 
-**`--lint`** finds traps. It prints errors, warnings and notes, and a count. The exit status is 1 when there is an error. Give `--lint` the same options as your real run (`-p`, `-c`, `--dedup`, `-o`), because some checks depend on them.
+**`--lint`** finds traps. It prints errors, warnings and notes, and a count. The exit status is 1 when there is an error. Give `--lint` the same options as your real run (`-p`, `-c`, `--dedup`, `--strict-n`, `-o`), because some checks depend on them.
 
 ```
-$ scan_for_matches --lint -c --dedup --format gff3 cacta.pat
+$ scan_for_matches --lint -c --dedup --strict-n --format gff3 cacta.pat
 ```
 
 An error means the pattern does not work. A warning means the pattern runs but probably does not do what you want. A note is information.
@@ -1209,7 +1235,7 @@ An error means the pattern does not work. A warning means the pattern runs but p
 3. Change one letter to make the piece wrong. Run again. The hit must disappear.
 4. Only then run it on a genome.
 
-Use `^` and `$` to test on a very short sequence. Use `-m 1` to stop after the first hit. Also check the hits that lie near `N` letters (assembly gaps): a name that caught `N` can give false hits (see [mistake 12](#12-n-assembly-gaps-inside-a-name)).
+Use `^` and `$` to test on a very short sequence. Use `-m 1` to stop after the first hit. For a genome with assembly gaps (`N`), add `--strict-n`: else a name that caught `N` can give false hits (see [mistake 12](#12-n-assembly-gaps-inside-a-name)).
 
 ## Glossary
 

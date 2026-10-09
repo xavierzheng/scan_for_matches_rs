@@ -55,8 +55,9 @@ scan_for_matches --explain hairpin.pat
 scan_for_matches --lint -c hairpin.pat
 
 # TIR transposons in a genome: GFF3, 8 threads, all 22 patterns in one run,
-# then one file with genome-wide unique Names
-scan_for_matches -t 8 -c --dedup --format gff3 \
+# then one file with genome-wide unique Names (--strict-n: no false hits
+# at assembly gaps, see below)
+scan_for_matches -t 8 -c --dedup --strict-n --format gff3 \
     --input genome.fa.gz --output tir_all.gff3 tir_scan_patterns/labelled/*.pat
 scan_for_matches --merge --output tir.gff3 tir_all.gff3
 
@@ -67,7 +68,13 @@ scan_for_matches --help      # all options
 
 Newest first:
 
-* **0.4.0** (this version) – several patterns in one run (the input is
+* **0.4.1** (this version) – `--strict-n` against false hits at assembly
+  gaps (below); much less memory with `-t N` (maize, 20 threads: 13–16 GB
+  → 2.5–5.1 GB); [`PATTERNS.md`](PATTERNS.md), a guide to the pattern
+  language; `--explain` / `--lint` named the deletions and insertions of
+  `[m,d,i]` the wrong way round; BSD 3-Clause license.  Without
+  `--strict-n` the output is the same as 0.4.0.
+* **0.4.0** – several patterns in one run (the input is
   read once), `--lint` and `--explain` for patterns, `--merge` for the
   GFF3 of several runs (genome-wide unique Names), and
   `tools/jaspar2sfm.py` (JASPAR matrix → weight unit).  Without the new
@@ -106,7 +113,7 @@ Same command line as the original, or with input and output files:
 scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] [-t N] pattern_file < fasta_input > hits
 scan_for_matches [options] --input fasta_input --output hits pattern_file
 scan_for_matches --format F [options] pattern_file pattern_file ... < fasta_input > hits
-scan_for_matches --lint [-p] [-c] [--dedup] pattern_file ...
+scan_for_matches --lint [-p] [-c] [--dedup] [--strict-n] pattern_file ...
 scan_for_matches --explain [-p] pattern_file ...
 scan_for_matches --merge [merge options] run1.gff3 run2.gff3 ... > all.gff3
 ```
@@ -124,6 +131,7 @@ scan_for_matches --merge [merge options] run1.gff3 run2.gff3 ... > all.gff3
 | `-t N` | use N threads: several records at the same time, and long records in pieces; default 1.  The output is the same as with one thread |
 | `--input FILE` | read the FASTA input from FILE instead of stdin (`-`: stdin) |
 | `--output FILE` | write the hits to FILE instead of stdout (`-`: stdout) |
+| `--strict-n` | a letter that is not A, C, G, T and that a name caught (`N` of an assembly gap, `R`, `Y`, ...) is 1 mismatch when `p1` / `<p1` uses the name again; see [Assembly gaps](#assembly-gaps---strict-n) |
 | `-h`, `--help` | show the options and exit |
 
 `-i` and `-o` keep the meaning they have in the original program (ids
@@ -138,6 +146,36 @@ decompressed by N threads (plain gzip uses one thread):
 ```sh
 scan_for_matches -c pat_file < genome.fna.gz
 ```
+
+### Assembly gaps: `--strict-n`
+
+A range takes any letter, so a name (`p1=8...8`) can catch `N` from an
+assembly gap.  Without the option, when `p1` or `<p1` uses the name
+again, each caught `N` accepts any letter, as the pattern letter `N` does
+(the original C program does the same).  So a TSD made of `N` matches
+anything, and you get false hits at gaps.
+
+**Rule (with `--strict-n`): each letter that a name caught and that is
+not A, C, G or T counts as 1 mismatch when `p1` or `<p1` uses the name
+again.**  The mismatches the pattern allows decide; there is no other
+limit.
+
+| pattern | the name caught | without `--strict-n` | with `--strict-n` |
+|---|---|---|---|
+| `p1=3...3 7...7 p1` (exact TSD) | `GNT` (1 N) | hit | no hit |
+| `p1=4...4 6...6 p1[1,0,0]` (1 mismatch allowed) | `GNTA` (1 N), the rest the same | hit | hit (the N uses the 1 mismatch) |
+| `p1=4...4 6...6 p1[1,0,0]` | `GNNA` (2 N) | hit | no hit |
+| `p1=4...4 6...6 p1[1,0,0]` | `GNTA` (1 N) and 1 other mismatch | hit | no hit |
+| `p1=4...4 6...6 <p1` | `GNTA` (1 N) | hit | no hit |
+| `p1=4...4 6...6 ~p1[1,0,0]` | `GNTA` (1 N) | no hit | no hit (`~p1` never matched a caught N) |
+| any pattern | `N` only inside a gap (`6...6`, `500...15000`) | hit | hit (no change) |
+| `R`, `Y`, other IUPAC codes | same as `N`: 1 code = 1 mismatch | | |
+
+The rule works inside the search, also with gap skipping and `-t N`: a
+false hit does not hide a real element next to it.  `--strict-n` is for
+DNA only (not with `-p`).  `--lint` gives a note for each `p1` / `<p1` of
+a range name until `--strict-n` is given.  More examples:
+[`PATTERNS.md`](PATTERNS.md#12-n-assembly-gaps-inside-a-name).
 
 ### Output formats (`--format`)
 
@@ -183,7 +221,7 @@ GFF3 of one hit (`>chr1:[21,80]`):
 
 ```
 ##gff-version 3
-# scan_for_matches 0.4.0 pattern=cacta.pat
+# scan_for_matches 0.4.1 pattern=cacta.pat
 ##sequence-region chr1 1 95
 chr1  scan_for_matches  repeat_region                         21  80  .  +  .  ID=DTC1;Name=DTC1;Classification=TIR/DTC;Method=structural;Sequence_ontology=SO:0000657
 chr1  scan_for_matches  target_site_duplication               21  23  .  +  .  ID=DTC1.lTSD;Parent=DTC1;Name=DTC1;...
@@ -226,7 +264,7 @@ empty unit has end = start - 1.
 ### Several patterns in one run
 
 ```sh
-scan_for_matches -t 20 -c --dedup --format gff3 \
+scan_for_matches -t 20 -c --dedup --strict-n --format gff3 \
     --input genome.fna.gz --output tir.gff3 tir_scan_patterns/labelled/*.pat
 ```
 
@@ -266,7 +304,8 @@ No input is read.  Several pattern files can be given.
     becomes the value of `-o`), `-c` without `--dedup` for a pattern that
     reads the same on both strands (every element found twice);
   - notes: a wide gap that cannot skip gap lengths (slow), `<pN` (reverse,
-    not reverse complement), `pN=a...b` uses the shortest length that
+    not reverse complement), `pN` / `<pN` of a range name without
+    `--strict-n` (a caught `N` matches any letter), `pN=a...b` uses the shortest length that
     works, alternative order, inserts and deletes together, weight units
     score `N` as an average, unused names, patterns that do not split for
     threads.
@@ -274,7 +313,10 @@ No input is read.  Several pattern files can be given.
 ```
 $ scan_for_matches --lint -c tir_scan_patterns/labelled/00_DTC_published_2025.pat
 tir_scan_patterns/labelled/00_DTC_published_2025.pat: warning: the pattern reads the same on both strands: with -c, every element is found twice; use --dedup with --format
-0 errors, 1 warnings, 0 notes
+tir_scan_patterns/labelled/00_DTC_published_2025.pat:7: note: `p1`: an N that p1 caught from the data matches any letter here (false hits at assembly gaps); add --strict-n for genomes with gaps
+0 errors, 1 warnings, 1 notes
+$ scan_for_matches --lint -c --dedup --strict-n --format gff3 tir_scan_patterns/labelled/00_DTC_published_2025.pat
+0 errors, 0 warnings, 0 notes
 ```
 
 ### Merging several runs: `--merge`
@@ -309,8 +351,8 @@ and bgzip are detected). Any GFF3 with `ID`/`Parent` works.
 - Exit status: 0 ok, 1 bad input (`merge: FILE:LINE: message`), 2 bad options.
 
 ```
-scan_for_matches -c --dedup --format gff3 00_DTC_published_2025.pat < genome.fa > a.gff3
-scan_for_matches -c --dedup --format gff3 09_DTC_CACTA_seed10.pat   < genome.fa > b.gff3
+scan_for_matches -c --dedup --strict-n --format gff3 00_DTC_published_2025.pat < genome.fa > a.gff3
+scan_for_matches -c --dedup --strict-n --format gff3 09_DTC_CACTA_seed10.pat   < genome.fa > b.gff3
 scan_for_matches --merge --overlap 0.9 a.gff3 b.gff3 --output all.gff3
 ```
 
@@ -416,7 +458,12 @@ cargo test --release
   (options, hit and miss limits, ignore list, damaged input, patterns
   that use earlier sequences); `tests/fuzz_threads.py` does the same with
   random patterns and input (`FUZZ_FORMAT=1`: with random `--format`
-  and `--dedup`).
+  and `--dedup`; `FUZZ_STRICT_N=1`: with `--strict-n`).
+* `tests/strict_n.rs` – `--strict-n`: the cases of the table, an
+  assembly gap before a real TSD with gap skipping and `-t 4`.
+  `tests/fuzz_strict_n.py BIN N SEED` compares the hits with and without
+  `--strict-n` to a small separate reference (TSD/TIR-like patterns,
+  data with `N` runs and IUPAC codes).
 * `tests/formats.rs` – `--format`: GFF3 of a CACTA hit, BED, `--dedup`
   with `-m`, label errors, and JSON lines whose unit coordinates, read
   back from the FASTA on both strands, give the printed text (with

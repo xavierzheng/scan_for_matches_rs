@@ -161,6 +161,15 @@ impl Drop for SharedSeq {
 /// strand (built by the first that needs it).
 pub type SharedIndex = std::sync::Arc<std::sync::OnceLock<KIndex>>;
 
+/// `--strict-n`: a letter other than A, C, G, T that a name caught is one
+/// mismatch when `pN` or `<pN` uses the name again (else it matches any
+/// letter, as in C).  Read by `Engine::new`.
+static STRICT_N: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_strict_n(on: bool) {
+    STRICT_N.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// 2-bit value of a plain base code, or None.
 #[inline(always)]
 fn base2(c: u8) -> Option<u32> {
@@ -996,6 +1005,8 @@ pub struct Engine {
     track_units: bool,
     /// the unit slot of each entry of the last hit
     hit_slots: Vec<u32>,
+    /// `--strict-n` (DNA only)
+    strict_n: bool,
 }
 
 // An engine owns its memory blocks (the raw pointers point only into
@@ -1055,6 +1066,7 @@ impl Engine {
             unit_offs: Vec::new(),
             track_units: false,
             hit_slots: Vec::new(),
+            strict_n: STRICT_N.load(std::sync::atomic::Ordering::Relaxed),
         };
         for (i, v) in KNOWN_CHAR.iter().enumerate() {
             e.wb(e.mem.sa(A_KNOWN_CHAR) + i as i64, *v);
@@ -2154,11 +2166,18 @@ impl Engine {
                 // REPEAT
                 let pu1 = m.names(self.r32(n + O_U12));
                 let (p1, ln) = (self.r64(pu1 + O_HIT), self.r32(pu1 + O_MLEN) as i64);
+                let strict = self.strict_n && !m.pep;
                 for k in 0..ln {
                     if masks.len() >= max {
                         break;
                     }
-                    masks.push(m.rb(p1 + k) & 15);
+                    let c = m.rb(p1 + k) & 15;
+                    // --strict-n: mask 0 matches no base
+                    masks.push(if strict && KNOWN_CHAR[c as usize] == 0 {
+                        0
+                    } else {
+                        c
+                    });
                 }
                 if ln == 0 { Some(None) } else { Some(Some(())) }
             }
@@ -3578,17 +3597,19 @@ impl Engine {
             (sr, if pushed { 2 } else { 1 })
         } else {
             let (ins, del, mis) = (g32!(O_U0), g32!(O_U4), g32!(O_U8));
-            let i = self.loose_match(
-                One::Mem(p1),
-                ln,
-                sr,
-                (er + 1 - sr) as i32,
-                ins,
-                del,
-                mis,
-                -1,
-                false,
-            );
+            // --strict-n: code 0 (matches no base) for a caught N or IUPAC code
+            let strict = self.strict_n && !m.pep;
+            let unknown = |k: i64| KNOWN_CHAR[(m.rb(p1 + k) & 15) as usize] == 0;
+            let plain: Vec<u8>;
+            let one = if strict && (0..ln as i64).any(unknown) {
+                plain = (0..ln as i64)
+                    .map(|k| if unknown(k) { 0 } else { m.rb(p1 + k) })
+                    .collect();
+                One::Bytes(&plain)
+            } else {
+                One::Mem(p1)
+            };
+            let i = self.loose_match(one, ln, sr, (er + 1 - sr) as i32, ins, del, mis, -1, false);
             if i != 0 {
                 let i = i - 1;
                 s64!(O_HIT, sr);
@@ -3641,16 +3662,26 @@ impl Engine {
             (sr, if pushed { 2 } else { 1 })
         } else {
             let n = ln.max(0) as usize;
+            // --strict-n: code 0 (matches no base) for a caught N or IUPAC code
+            let strict = self.strict_n && !m.pep;
+            let get = |k: i64| {
+                let c = m.rb(k);
+                if strict && KNOWN_CHAR[(c & 15) as usize] == 0 {
+                    0
+                } else {
+                    c
+                }
+            };
             // C uses char scratch[4000] and mallocs only above that
             let mut scratch = [std::mem::MaybeUninit::<u8>::uninit(); 4000];
             let mut heap_copy: Vec<u8> = Vec::new();
             let p3: &[u8] = if n <= 4000 {
                 for (i, x) in scratch[..n].iter_mut().enumerate() {
-                    *x = std::mem::MaybeUninit::new(m.rb(p1 + (n - 1 - i) as i64));
+                    *x = std::mem::MaybeUninit::new(get(p1 + (n - 1 - i) as i64));
                 }
                 unsafe { std::slice::from_raw_parts(scratch.as_ptr() as *const u8, n) }
             } else {
-                heap_copy.extend((0..n).map(|i| m.rb(p1 + (n - 1 - i) as i64)));
+                heap_copy.extend((0..n).map(|i| get(p1 + (n - 1 - i) as i64)));
                 &heap_copy[..]
             };
             let (ins, del, mis) = (g32!(O_U0), g32!(O_U4), g32!(O_U8));

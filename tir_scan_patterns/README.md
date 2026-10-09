@@ -317,19 +317,24 @@ download did not include program binaries, and no user genome was run.
 - Example (one pattern, bgzip or plain FASTA, 8 threads):
 
   ```sh
-  scan_for_matches -t 8 -c --dedup --format gff3 --name-prefix DTC \
+  scan_for_matches -t 8 -c --dedup --strict-n --format gff3 --name-prefix DTC \
       --input genome.fna.gz --output DTC.gff3 \
       tir_scan_patterns/labelled/00_DTC_published_2025.pat
   ```
 
   Give each pattern its own `--name-prefix` (or `--name-start`), so Names
   do not repeat between runs.
+- (0.4.1) `--strict-n`: without it, a TSD (`p1`) that caught `N` from an
+  assembly gap accepts any letter, so false elements are found at gaps.
+  With it, each caught letter that is not A, C, G, T counts as 1 mismatch
+  (the TSDs here allow none, so such a hit is dropped).  Use it for every
+  genome with gaps; see the main [README](../README.md#assembly-gaps---strict-n).
 - (0.4.0) All patterns in one run (the genome is read once), then one
   file with genome-wide unique Names and without elements found by two
   patterns:
 
   ```sh
-  scan_for_matches -t 20 -c --dedup --format gff3 \
+  scan_for_matches -t 20 -c --dedup --strict-n --format gff3 \
       --input genome.fna.gz --output tir_all.gff3 tir_scan_patterns/labelled/*.pat
   scan_for_matches --merge --output tir_merged.gff3 tir_all.gff3
   ```
