@@ -17,7 +17,11 @@
       the assistant they use; this project does not host any model.
       Tested: Claude Haiku with only the skill, 10 tasks, 10 correct
       (graded with the binary on planted and broken sites).
-- [ ] `--synth`: make test sequences with a planted element for a pattern.
+- [x] `--synth`: make test sequences with a planted element for a pattern.
+      Closed 2026-10-09, not done: it is only a test aid and does not
+      improve annotation.  Plant a site by hand with `printf` (PATTERNS.md,
+      the skill); for the rate of random hits, run the pattern on a
+      shuffled copy of the genome.
 
 ## Platforms
 
