@@ -70,7 +70,12 @@ scan_for_matches --help      # all options
 
 Newest first:
 
-* **0.4.1** (this version) – `--strict-n` against false hits at assembly
+* **0.4.2** (this version) – `~pN[m,0,0]` (a TIR with mismatches) after
+  a wide gap is fast when pN has at least 5 x (m + 1) letters (100 Mb:
+  1 026 s → 8 s; the same output); `tir_scan_patterns/mm2/`: DTM, DTE and
+  Maverick patterns that allow 2 mismatches in the TIR; `--lint` says
+  "slow" for a `~pN[m,0,0]` that cannot be looked up.
+* **0.4.1** – `--strict-n` against false hits at assembly
   gaps (below); much less memory with `-t N` (maize, 20 threads: 13–16 GB
   → 2.5–5.1 GB); [`PATTERNS.md`](PATTERNS.md), a guide to the pattern
   language; `--explain` / `--lint` named the deletions and insertions of
@@ -223,7 +228,7 @@ GFF3 of one hit (`>chr1:[21,80]`):
 
 ```
 ##gff-version 3
-# scan_for_matches 0.4.1 pattern=cacta.pat
+# scan_for_matches 0.4.2 pattern=cacta.pat
 ##sequence-region chr1 1 95
 chr1  scan_for_matches  repeat_region                         21  80  .  +  .  ID=DTC1;Name=DTC1;Classification=TIR/DTC;Method=structural;Sequence_ontology=SO:0000657
 chr1  scan_for_matches  target_site_duplication               21  23  .  +  .  ID=DTC1.lTSD;Parent=DTC1;Name=DTC1;...

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 — 2026-10-10
 
 Faster `~pN[m,0,0]` after a wide gap; the output does not change.
 
