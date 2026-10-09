@@ -1101,7 +1101,7 @@ w9.pat:1: note: slow: each gap length of `500...15000` is tried (`TAGTG[1,0,0]` 
 0 errors, 0 warnings, 1 notes
 ```
 
-Right: put the exact words first, and put errors only on the `~p2[1,0,0]` unit (this one can be skipped fast). Or make the gap narrower.
+Right: put the exact words first, and put errors only on the `~p2[1,0,0]` unit. It is fast when 5 exact letters follow it, as `TAGTG` here (or a TSD `p1` of 5 or more letters). Or make the gap narrower. `--lint` tells you when it is slow.
 
 ### 9. Two lines joined into one pattern
 

@@ -237,7 +237,12 @@ Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
 `--lint` gives a note for the slow wide gaps.
 
 - Gap skipping works only when the range is followed by an exact
-      word, an exact `~pN`, `~pN[m,0,0]` or an exact `pN`.  A range
+      word, an exact `~pN`, `~pN[m,0,0]` or an exact `pN`.  For
+      `~pN[m,0,0]` it is fast only when 5 exact letters follow; else
+      every gap length is checked (`--lint` says slow; 1 000 times
+      slower measured).  Index seeds (pN of at least 5 x (m + 1)
+      letters) fix this, but made exact dense patterns 5-9 % slower:
+      local branch `seeds`, not merged (2026-10-09).  A range
       followed by an inexact word, `pN` with errors, `~pN` with inserts
       or deletes, a weight matrix or another range is searched length by
       length (slow for wide ranges such as `50...30000`).

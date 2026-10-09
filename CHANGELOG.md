@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- `--lint`: "slow" also for a wide gap before `~pN[m,0,0]` (a TIR with
+  mismatches) with fewer than 5 exact letters after it.  Gap skipping
+  then checks every gap length: `TA p2=12...12 50...30000 ~p2[1,0,0] TA`
+  took 1 026 s on 100 Mb (the exact `~p2`: under 1 s).  The docs said
+  that `~pN[m,0,0]` is always fast; corrected (PATTERNS.md, the skill).
+- `tests/fuzz_skip.py --tir`: TIR patterns with mismatches after a wide
+  gap.
+
 ## 0.4.1 — 2026-10-09
 
 `--strict-n` against false hits at assembly gaps; less memory with
