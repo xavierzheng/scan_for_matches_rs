@@ -3,11 +3,15 @@
 skipping, for example 0.1.0, and one with it) on patterns with wide ranges
 followed by exact words, exact reverse complements and exact repeats.
 
-usage: fuzz_skip.py [--chain] OLD_BINARY NEW_BINARY [N_CASES] [SEED]
+usage: fuzz_skip.py [--chain | --tir] OLD_BINARY NEW_BINARY [N_CASES] [SEED]
 
 --chain: every pattern has a range followed by several units that check
 fixed strings (words, named words, ~pN and pN, also of names in the chain
 or of the range), which `next_start` checks together.
+
+--tir: TIR patterns whose reverse complement allows mismatches
+(`p2=10...24 60...8000 ~p2[1,0,0]`, 1 to 3 mismatches, few exact letters
+after it), so gap lengths are found by index seeds of the tolerant part.
 """
 import os
 import random
@@ -17,7 +21,8 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 CHAIN = "--chain" in sys.argv
-ARGS = [a for a in sys.argv[1:] if a != "--chain"]
+TIR = "--tir" in sys.argv
+ARGS = [a for a in sys.argv[1:] if a not in ("--chain", "--tir")]
 OLD, NEW = os.path.abspath(ARGS[0]), os.path.abspath(ARGS[1])
 N = int(ARGS[2]) if len(ARGS) > 2 else 1000
 SEED = int(ARGS[3]) if len(ARGS) > 3 else 1
@@ -122,6 +127,26 @@ def chain_pattern(r):
     return " ".join(units)
 
 
+def tir_pattern(r):
+    units = []
+    tsd = r.random() < 0.6
+    if tsd:
+        a = r.randint(2, 9)
+        units.append("p1=%d...%d" % (a, a + r.choice([0, 0, 1])))
+    if r.random() < 0.3:
+        units.append(r.choice(["ta", "cac", "g"]))
+    k = r.randint(10, 24)
+    units.append("p2=%d...%d" % (k, k + r.choice([0, 0, 2])))
+    a = r.randint(0, 60)
+    units.append("%d...%d" % (a, a + r.choice([60, 300, 2000, 8000])))
+    units.append("~p2[%d,0,0]" % r.choice([1, 1, 2, 3]))
+    if r.random() < 0.3:
+        units.append(r.choice(["ta", "gtg", "c", "acgt"]))
+    if tsd:
+        units.append(r.choice(["p1", "p1", "p1[1,0,0]"]))
+    return " ".join(units)
+
+
 def sequence(r, n):
     s = [r.choice("acgt") for _ in range(n)]
     # planted hairpins and repeats
@@ -133,10 +158,10 @@ def sequence(r, n):
         ins = stem + "".join(r.choice("acgt") for _ in range(gap)) + (rc(stem) if r.random() < 0.6 else stem)
         s[i:i] = list(ins)
     # planted TIR-like elements: TSD, TIR, gap, reverse complement, TSD
-    for _ in range(r.randint(0, 4) if CHAIN else 0):
-        tsd = "".join(r.choice("acgt") for _ in range(r.randint(0, 6)))
-        tir = "".join(r.choice("acgt") for _ in range(r.randint(1, 10)))
-        mid = "".join(r.choice("acgt") for _ in range(r.randint(0, 400)))
+    for _ in range(r.randint(0, 4) if CHAIN or TIR else 0):
+        tsd = "".join(r.choice("acgt") for _ in range(r.randint(0, 9 if TIR else 6)))
+        tir = "".join(r.choice("acgt") for _ in range(r.randint(10, 26) if TIR else r.randint(1, 10)))
+        mid = "".join(r.choice("acgt") for _ in range(r.randint(0, 3000 if TIR else 400)))
         i = r.randint(0, max(0, len(s) - 1))
         end = list(rc(tir))
         for _ in range(r.choice([0, 0, 1, 2])):
@@ -194,8 +219,9 @@ def run(b, args, pat, inp):
 
 def one(case):
     r = random.Random(SEED * 1000003 + case)
-    pat = chain_pattern(r) if CHAIN else pattern(r)
-    recs = "".join(">r%d\n%s\n" % (k, sequence(r, r.choice([50, 300, 2000, 6000]))) for k in range(r.randint(1, 3)))
+    pat = chain_pattern(r) if CHAIN else tir_pattern(r) if TIR else pattern(r)
+    sizes = [300, 2000, 6000, 20000] if TIR else [50, 300, 2000, 6000]
+    recs = "".join(">r%d\n%s\n" % (k, sequence(r, r.choice(sizes))) for k in range(r.randint(1, 3)))
     args = (["-c"] if r.random() < 0.4 else []) + (["-o", "1"] if r.random() < 0.3 else [])
     a = run(OLD, args, pat, recs.encode())
     b = run(NEW, args, pat, recs.encode())

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+Faster `~pN[m,0,0]` after a wide gap; the output does not change.
+
+### Faster
+- A wide gap followed by `~pN[m,0,0]` (a TIR with mismatches) with
+  fewer than 5 exact letters after it checked every gap length one by
+  one.  Now, when pN has at least 5 x (m + 1) letters, the gap lengths
+  are found by index lookups: with at most m mismatches, one of m + 1
+  blocks of the TIR matches exactly ("seeds").  B. napus chromosomes
+  A1-A3 (about 100 Mb), `-t 40`: `TA p2=12...12 50...30000 ~p2[1,0,0] TA`
+  hours → 8 s.  The same output as before (32 runs compared byte by
+  byte).
+
+### Changed
+- `--lint`: "slow" also for a wide gap before a `~pN[m,0,0]` that cannot
+  use seeds (pN shorter than 5 x (m + 1) letters and fewer than 5 exact
+  letters after it).
+
+Tests: `tests/fuzz_skip.py --tir` (TIR patterns with mismatches, 2 x
+1000 cases against 0.1.0, which has no gap skipping): no difference.
+`cargo test`, `fuzz_skip` plain and `--chain`, `fuzz_threads`,
+`fuzz_strict_n`, `fuzz_compare --compat` against the C program 2 x
+10 000: no difference.
+
 ## 0.4.1 — 2026-10-09
 
 `--strict-n` against false hits at assembly gaps; less memory with

@@ -831,6 +831,51 @@ impl<'a> Pat<'a> {
         }
     }
 
+    /// `n` (after a wide range) is not `~pK[m,0,0]`, or the engine finds
+    /// its gap lengths by index lookups: pK has at least 5 x (m + 1)
+    /// letters (seeds), or 5 exact plain letters follow (`rest`).  Else
+    /// every gap length is checked.
+    fn seeded(&self, n: &Unit, rest: &[Unit]) -> bool {
+        let Kind::Compl(None, k, e) = &n.kind else {
+            return true;
+        };
+        if e.mis == 0 {
+            return true;
+        }
+        let len = |k: i32| self.named(k).map(|d| self.len_range(d, 0));
+        if len(*k).is_some_and(|(lo, _)| lo >= 5 * (e.mis as i64 + 1)) {
+            return true;
+        }
+        let mut run = 0;
+        for u in rest {
+            match &u.kind {
+                Kind::Word(w, e) if e.exact() => {
+                    for c in w {
+                        if b"ACGTU".contains(&c.to_ascii_uppercase()) {
+                            run += 1;
+                        } else {
+                            run = 0;
+                        }
+                        if run >= 5 {
+                            return true;
+                        }
+                    }
+                }
+                Kind::Repeat(k, e) | Kind::Compl(None, k, e) if e.exact() => match len(*k) {
+                    Some((lo, hi)) if lo == hi => {
+                        run += lo;
+                        if run >= 5 {
+                            return true;
+                        }
+                    }
+                    _ => return false,
+                },
+                _ => return false,
+            }
+        }
+        false
+    }
+
     /// Wide ranges (> 1000 lengths) whose gap lengths are tried one by
     /// one, with the unit after them.
     fn slow(&self, units: &'a [Unit], after: Option<&'a Unit>, skip: bool, out: &mut Early2<'a>) {
@@ -838,8 +883,13 @@ impl<'a> Pat<'a> {
             let next = units.get(i + 1).or(after);
             match &u.kind {
                 Kind::Range(a, b) if *b as i64 - *a as i64 > 1000 => {
+                    let rest = if i + 1 < units.len() {
+                        &units[i + 2..]
+                    } else {
+                        &[]
+                    };
                     if let Some(n) = next
-                        && !(skip && self.skippable(n, u))
+                        && !(skip && self.skippable(n, u) && self.seeded(n, rest))
                     {
                         out.push((u, n));
                     }
@@ -1269,7 +1319,13 @@ impl Checker<'_, '_> {
         let mut slow = Vec::new();
         pat.slow(&pat.ps.units, None, skip, &mut slow);
         for (r, n) in slow {
-            let why = if skip {
+            let why = if skip && pat.skippable(n, r) {
+                format!(
+                    "`{}` has mismatches and too few letters to look up: give the name \
+                     at least 5 letters per allowed mismatch + 5, or put 5 exact letters after it",
+                    pat.text(n)
+                )
+            } else if skip {
                 format!(
                     "`{}` after it cannot be used to skip gap lengths",
                     pat.text(n)
@@ -2397,6 +2453,24 @@ mod tests {
         fires("50...30000 AC[1,0,0]", "note", "slow");
         fires("r1={au} p1=5...5 50...30000 r1~p1", "note", "slow");
         fires("p1=5...5 50...30000 ~p1[0,1,0]", "note", "slow");
+        // ~pN[m,0,0]: index seeds need 5 x (m + 1) letters, or 5 exact after
+        fires(
+            "TA p2=8...8 50...30000 ~p2[1,0,0] TA",
+            "note",
+            "too few letters to look up",
+        );
+        fires("p2=12...12 50...30000 ~p2[2,0,0] ACG", "note", "slow");
+        for p in [
+            "TA p2=12...12 50...30000 ~p2 TA",
+            "p2=10...10 50...30000 ~p2[1,0,0] TA",
+            "p2=15...15 50...30000 ~p2[2,0,0]",
+            "TA p2=12...12 50...30000 ~p2[1,0,0] TA",
+            "p2=12...12 50...30000 ~p2[2,0,0] ACGTA",
+            "p1=3...3 p2=7...7 50...30000 ~p2[1,0,0] TAGTG p1",
+            "p1=8...8 p2=7...7 50...30000 ~p2[1,0,0] p1",
+        ] {
+            assert!(!lint_s(p).contains("slow"), "{p}");
+        }
         fires("p1=0...5000 ~p1", "note", "slow");
         fires("p1=3...3 0...5 <p1", "note", "not the reverse complement");
         fires("p1=2...10 0...5 p1", "note", "shortest length that works");
