@@ -2105,6 +2105,8 @@ impl Engine {
     /// `None`: it never matches.  Only the first `max` masks are made: a
     /// prefix is enough, the matcher checks the rest (and making all of
     /// them costs more than it saves when the unit is long).
+    // not inlined: inside next_start_far it slows the masks_match_at loop by ~11%
+    #[inline(never)]
     fn unit_masks(&mut self, n: i64, range: i64, max: usize) -> Option<Option<()>> {
         let mut masks = std::mem::take(&mut self.masks);
         masks.clear();
