@@ -22,6 +22,25 @@
       improve annotation.  Plant a site by hand with `printf` (PATTERNS.md,
       the skill); for the rate of random hits, run the pattern on a
       shuffled copy of the genome.
+- [ ] Idea (2026-10-10, not decided): `~pN[m,d,i]` with deletions or
+      insertions by "seed and extend" (the idea of BLAST / BWA; the
+      tools themselves do not fit: they need a known query, and a TIR
+      is not known before the search).  With e = m + d + i changes,
+      one of e + 1 blocks of pN matches exactly (shifted by at most e):
+      look the blocks up in the k-mer index, then check each place by
+      banded dynamic programming (only the cells near the diagonal).
+      Gains: `~p2[1,1,1]` after a wide gap becomes fast; the best
+      alignment is found (the greedy matcher gave a wrong length for
+      9.1 % of `[1,1,1]` cases, `bench_mut/REPORT.md`).  Cost: the
+      hits are no longer those of the C program (it takes the first
+      match in a fixed order, not the best), so only as a new option
+      (for example `--align`), never the default.
+      First measure how many elements have an indel in the TIR: on
+      B. napus A1-A3, real and shuffled, compare `~p2[2,0,0]`
+      (`tir_scan_patterns/mm2/`) with `~p2[2,1,1]` for DTM, DTE and
+      Maverick.  Hits that only the indel version finds, minus the
+      shuffled rate, are the gain.  Do the option only if that gain is
+      large.
 
 ## Platforms
 
