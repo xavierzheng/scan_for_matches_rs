@@ -28,7 +28,8 @@ patterns for you, see [AI assistant skill](#ai-assistant-skill).
   genome-wide file.
 * `--lint` and `--explain` check and describe a pattern before a long run.
 * 22 ready-made TIR transposon patterns in
-  [`tir_scan_patterns/`](tir_scan_patterns/README.md).
+  [`tir_scan_patterns/`](tir_scan_patterns/README.md), plus 4 versions
+  that allow 2 mismatches in long TIRs (`tir_scan_patterns/mm2/`).
 
 **Install**
 

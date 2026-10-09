@@ -345,3 +345,31 @@ download did not include program binaries, and no user genome was run.
   `--explain FILE.pat` check and describe a pattern you change.
 - Speed of all 22 patterns on the 1.0 Gb *B. napus* genome: see
   `CHANGELOG.md`.
+
+## Versions with mismatches: `mm2/` (new; not in the Chinese version)
+
+Old elements have mutations, so their two TIRs are no longer exact
+copies.  The 4 patterns with long TIRs (19-30 bp) have a copy in `mm2/`
+(plain) and `mm2/labelled/` that allows up to 2 substitutions in the
+right TIR: `~p2` becomes `~p2[2,0,0]`.  The TSDs and the G/C anchors stay
+exact.  The original 22 files are not changed, and `labelled/*.pat` does
+not include these copies.
+
+| file in `mm2/` | real hits, exact | real hits, mm2 | shuffled hits, mm2 | time, exact → mm2 |
+|---|---|---|---|---|
+| `03_DTM_G_seed20_mm2` | 885 | 1 285 | 0 | 3 s → 4 s |
+| `03_DTM_unanchored_seed20_mm2` | 1 523 | 2 565 | 0 | 14 s → 27 s |
+| `04_DTE_seed20_mm2` | 1 859 | 3 297 | 1 | 10 s → 23 s |
+| `10_DMM_Maverick_seed30_mm2` | 290 | 568 | 0 | 4 s → 34 s |
+
+*B. napus* chromosomes A1-A3 (about 100 Mb), `-t 40 -c --dedup
+--strict-n --format gff3`.  "Shuffled": the same chromosomes with the
+letters shuffled in 10 kb windows (real elements are gone), so a hit
+there is random; the exact patterns give 0.  Plain and labelled files
+give the same hits.
+
+Do not add mismatches to the patterns with short TIRs (5-15 bp): in the
+same test, 1 mismatch raised the random share to 8-33 % (12-15 bp) or
+made the hits mostly random (5-8 bp).  Run an `mm2` file next to its
+exact file, or instead of it; with both in one run, `--merge` removes
+the elements found twice.

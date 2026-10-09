@@ -14,6 +14,12 @@ Faster `~pN[m,0,0]` after a wide gap; the output does not change.
   1 026 s → 8 s.  Other patterns: about 2 % slower (one dense pattern,
   100 Mb, median of 6 runs).
 
+### Added
+- `tir_scan_patterns/mm2/`: copies of 03_DTM (both), 04_DTE and
+  10_DMM_Maverick with up to 2 substitutions in the right TIR
+  (`~p2[2,0,0]`).  A1-A3 of B. napus: 40-100 % more hits, 0-1 in the
+  shuffled genome.  The original 22 files are not changed.
+
 ### Changed
 - `--lint`: "slow" also for a wide gap before a `~pN[m,0,0]` that cannot
   use seeds (pN shorter than 5 x (m + 1) letters and fewer than 5 exact
