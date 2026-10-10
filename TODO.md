@@ -41,6 +41,17 @@
       Maverick.  Hits that only the indel version finds, minus the
       shuffled rate, are the gain.  Do the option only if that gain is
       large.
+- [ ] `--progress` with `-t 1` (2026-10-10): the line shows only the
+      record searched now, not how far the search is in it (with
+      `-t N` it shows the strand and the Mb reached, from the pieces).
+      The one-thread search runs inside `Engine::first_match` /
+      `cont_match` (`pattern_match` moves the start on its own), so
+      the position is not seen from `main.rs`.  Ideas: the engine
+      writes its start position to an atomic every few Mb (cost: check
+      the speed, as with `unit_masks`); or `-t 1` also searches long
+      records in pieces (`first_match_in`) and joins them like
+      `join_piece` (more code, the output must stay the same).  Also:
+      the hit count is updated only when a record ends.
 
 ## Platforms
 
