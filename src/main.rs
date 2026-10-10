@@ -541,6 +541,90 @@ fn read_error(msg: &[u8]) -> ! {
     std::process::exit(1);
 }
 
+/// `--progress`: what the main thread has done.  A thread prints it to
+/// stderr every minute (tests: SFM_PROGRESS_SECS); stdout does not change.
+struct Progress {
+    t0: std::time::Instant,
+    records: std::sync::atomic::AtomicU64,
+    bases: std::sync::atomic::AtomicU64,
+    hits: std::sync::atomic::AtomicU64,
+    /// the record searched now (empty between records)
+    now: std::sync::Mutex<String>,
+}
+
+static PROGRESS: std::sync::OnceLock<Progress> = std::sync::OnceLock::new();
+
+fn mb(n: usize) -> String {
+    format!("{:.1} Mb", n as f64 / 1e6)
+}
+
+impl Progress {
+    fn start() {
+        let secs = std::env::var("SFM_PROGRESS_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&n| n >= 1)
+            .unwrap_or(60);
+        let p = PROGRESS.get_or_init(|| Progress {
+            t0: std::time::Instant::now(),
+            records: Default::default(),
+            bases: Default::default(),
+            hits: Default::default(),
+            now: Default::default(),
+        });
+        p.print("started");
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(secs));
+                let now = p.now.lock().unwrap().clone();
+                if now.is_empty() {
+                    p.print("running");
+                } else {
+                    p.print(&format!("now {now}"));
+                }
+            }
+        });
+    }
+
+    fn print(&self, what: &str) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let t = self.t0.elapsed().as_secs();
+        eprintln!(
+            "scan_for_matches: [{}:{:02}:{:02}] {} records ({}) done, {} hits; {what}",
+            t / 3600,
+            t / 60 % 60,
+            t % 60,
+            self.records.load(Relaxed),
+            mb(self.bases.load(Relaxed) as usize),
+            self.hits.load(Relaxed),
+        );
+    }
+
+    /// Set what is searched now (`what` is only called with --progress).
+    fn now(what: impl FnOnce() -> String) {
+        if let Some(p) = PROGRESS.get() {
+            *p.now.lock().unwrap() = what();
+        }
+    }
+
+    /// A record of `ln` letters is done; `hits` printed so far.
+    fn record_done(ln: usize, hits: u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let Some(p) = PROGRESS.get() {
+            p.records.fetch_add(1, Relaxed);
+            p.bases.fetch_add(ln as u64, Relaxed);
+            p.hits.store(hits, Relaxed);
+            p.now.lock().unwrap().clear();
+        }
+    }
+
+    fn finish() {
+        if let Some(p) = PROGRESS.get() {
+            p.print("finished");
+        }
+    }
+}
+
 /// Several patterns: after searching a record at least this long, an
 /// engine gives the memory of the record back.
 const RELEASE_LEN: usize = 1 << 22;
@@ -568,6 +652,8 @@ fn run_sequential(
         eng.set_track_units(opts.raw);
     }
     let several = engs.len() > 1;
+    let n_pats = engs.len();
+    let all_hits = max_hits;
     let mut rd = FastaReader::new(fasta_source(input, opts.threads));
     while max_hits > 0 {
         match rd.next() {
@@ -583,6 +669,14 @@ fn run_sequential(
                         break;
                     }
                     pr.pat = k;
+                    Progress::now(|| {
+                        format!(
+                            "{} ({}), pattern {}/{n_pats}",
+                            String::from_utf8_lossy(&id),
+                            mb(body.len()),
+                            k + 1
+                        )
+                    });
                     hit |= scan_record(
                         eng,
                         &mut data,
@@ -600,6 +694,7 @@ fn run_sequential(
                     }
                 }
                 pr.out.end_record();
+                Progress::record_done(body.len(), (all_hits - max_hits) as u64);
                 if !hit {
                     missed(&mut stop_after);
                 }
@@ -755,8 +850,9 @@ struct PieceHits {
 
 /// What a worker or the reader sends to the writer, in input order.
 enum Done {
-    /// the hits of a whole job; first and last job of the record
-    Hits(HitBuf, bool, bool),
+    /// the hits of a whole job; first and last job of the record, its
+    /// length
+    Hits(HitBuf, bool, bool, usize),
     Piece(PieceJob, PieceHits),
     Error(Vec<u8>),
     End,
@@ -1029,7 +1125,7 @@ fn run_threads(
                                     pe.release();
                                 }
                             }
-                            Done::Hits(pr.out, w.first_of_record, w.end_of_record)
+                            Done::Hits(pr.out, w.first_of_record, w.end_of_record, w.rec.ln)
                         }
                         Job::Piece(job) => {
                             if let Some(h) = held.filter(|&h| h != job.pat) {
@@ -1067,6 +1163,7 @@ fn run_threads(
         raw: opts.raw,
         pat: 0,
     };
+    let all_hits = max_hits;
     while max_hits > 0 {
         let item = match waiting.remove(&next) {
             Some(d) => d,
@@ -1082,18 +1179,18 @@ fn run_threads(
         if matches!(item, Done::Hits(..) | Done::Piece(..)) {
             let _ = ticket_rx.try_recv();
         }
-        let end_of_record = match item {
+        let (end_of_record, rec_ln) = match item {
             Done::End => break,
             Done::Error(msg) => {
                 out.end_record();
                 read_error(&msg)
             }
-            Done::Hits(h, first, end) => {
+            Done::Hits(h, first, end, ln) => {
                 if first {
                     rec_hit = false;
                 }
                 rec_hit |= print_hits(&mut out, &h, 0, &mut max_hits) > 0;
-                end
+                (end, ln)
             }
             Done::Piece(job, ph) => {
                 if job.first_of_record {
@@ -1102,6 +1199,16 @@ fn run_threads(
                 if job.first {
                     past = 0;
                 }
+                Progress::now(|| {
+                    format!(
+                        "{} ({}), pattern {}/{n_pats}, strand {}, at {}",
+                        String::from_utf8_lossy(&job.rec.id),
+                        mb(job.rec.ln),
+                        job.pat + 1,
+                        if job.rev { '-' } else { '+' },
+                        mb((job.last + 1).min(job.rec.ln))
+                    )
+                });
                 if opts.show_overlaps && !job.rev {
                     // every hit, in search order
                     rec_hit |= print_hits(&mut out, &ph.out, 0, &mut max_hits) > 0;
@@ -1133,11 +1240,12 @@ fn run_threads(
                     );
                     wstats[job.pat].joined(&warm[job.pat], job.last + 1 - job.from, again);
                 }
-                job.end_of_record
+                (job.end_of_record, job.rec.ln)
             }
         };
         if end_of_record {
             out.end_record();
+            Progress::record_done(rec_ln, (all_hits - max_hits) as u64);
             if !rec_hit && max_hits > 0 {
                 missed(&mut stop_after);
             }
@@ -1354,6 +1462,9 @@ options:
                      with one thread; bgzip input is decompressed by N threads
   --input FILE       read the FASTA input from FILE (default: stdin; -: stdin)
   --output FILE      write the hits to FILE (default: stdout; -: stdout)
+  --progress         every minute, write to stderr how far the search is
+                     (records and Mb done, hits, the record searched now);
+                     the hits do not change
   -h, --help         show this help and exit
 
 output formats (default: the original output):
@@ -1596,7 +1707,7 @@ fn real_main() {
                 "input",
                 "output",
             ],
-            &["dedup", "help", "lint", "explain", "strict-n"],
+            &["dedup", "help", "lint", "explain", "strict-n", "progress"],
         )
         .unwrap_or_else(|e| long_error(&e));
     // -h only as an option of its own, not as the value of an option
@@ -1623,10 +1734,11 @@ fn real_main() {
     let mut fmt_opts = 0;
     let (mut do_lint, mut do_explain) = (false, false);
     let mut strict_n = false;
+    let mut progress = false;
     for (name, v) in &long {
         if !matches!(
             name.as_str(),
-            "input" | "output" | "lint" | "explain" | "strict-n"
+            "input" | "output" | "lint" | "explain" | "strict-n" | "progress"
         ) {
             fmt_opts += 1;
         }
@@ -1650,6 +1762,7 @@ fn real_main() {
             "lint" => do_lint = true,
             "explain" => do_explain = true,
             "strict-n" => strict_n = true,
+            "progress" => progress = true,
             _ => fopts.dedup = true,
         }
     }
@@ -1857,6 +1970,9 @@ fn real_main() {
         }
     }
     let out = Writer::new(formatter);
+    if progress {
+        Progress::start();
+    }
     // patterns that use matches of earlier sequences stay on one thread
     if threads > 1 && !engs.iter().any(|e| e.uses_earlier_state()) && max_hits > 0 {
         let split = engs.iter().map(|e| e.can_split()).collect();
@@ -1875,4 +1991,5 @@ fn real_main() {
     } else {
         run_sequential(engs, out, input, opts, &ignore, max_hits, stop_after);
     }
+    Progress::finish();
 }

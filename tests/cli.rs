@@ -132,3 +132,41 @@ fn missing_input_file_is_an_error() {
     assert_eq!(code, Some(2));
     assert_eq!(err, "scan_for_matches: option --input needs a value\n");
 }
+
+#[test]
+fn progress_goes_to_stderr_only() {
+    let d = dir("prog");
+    let pat = d.join("p");
+    std::fs::write(&pat, format!("{PAT}\n")).unwrap();
+    let p = pat.to_str().unwrap();
+    let (_, plain, _) = run(&["-c", p], &fasta());
+    // every hit counts (no --dedup)
+    let hits = plain.iter().filter(|&&b| b == b'>').count();
+    assert!(hits > 0);
+    for extra in [&["-c"][..], &["-c", "-t", "3"], &["-c", "--format", "gff3"]] {
+        let mut a = extra.to_vec();
+        a.push(p);
+        let (_, want, _) = run(&a, &fasta());
+        let mut b = vec!["--progress"];
+        b.extend(&a);
+        // small pieces: the long-record path of -t is used too
+        let mut child = Command::new(BIN)
+            .args(&b)
+            .env("SFM_PIECE", "300")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&fasta()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(out.stdout, want, "{extra:?}");
+        let err = String::from_utf8(out.stderr).unwrap();
+        let lines: Vec<&str> = err.lines().collect();
+        assert_eq!(lines.len(), 2, "{err}");
+        assert!(lines[0].ends_with("0 records (0.0 Mb) done, 0 hits; started"), "{err}");
+        let fin = format!("20 records (0.0 Mb) done, {hits} hits; finished");
+        assert!(lines[1].ends_with(&fin), "{err} / {fin}");
+    }
+}

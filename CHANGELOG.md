@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `--progress`: every minute a line on stderr with the records and Mb
+  done, the hits, and the record searched now (with `-t N` also the
+  strand and how far in it).  The hits (stdout or `--output`) do not
+  change.  Long Slurm jobs now show in `slurm-*.out` how far they are.
+  Example (A1-A3 of B. napus, `-t 8`):
+  `scan_for_matches: [0:00:35] 1 records (31.0 Mb) done, 205 hits; now NC_063435.1 (29.6 Mb), pattern 1/1, strand +, at 23.1 Mb`
+
 ## 0.4.2 — 2026-10-10
 
 Faster `~pN[m,0,0]` after a wide gap; the output does not change.

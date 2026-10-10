@@ -247,6 +247,10 @@ C 原版每條序列 250,000,000 nt 的上限已拿掉（0.1.0），不必再切
 的每個非 A、C、G、T 字母算 1 個 mismatch；本套 TSD 不容許 mismatch，
 所以這種 hit 會被丟掉。有 gap 的基因組都應該加。
 
+--progress（0.4.3）：每分鐘在 stderr 寫一行進度（做完幾條序列、幾 Mb、
+幾個 hit、現在在找哪一條；用 -t N 時還有哪一股、找到第幾 Mb）。結果
+（stdout 或 --output）不變。在 Slurm 下這些行會出現在 slurm-*.out。
+
 範例（一個 pattern，bgzip 或一般 FASTA，8 個執行緒）：
 scan_for_matches -t 8 -c --dedup --strict-n --format gff3 --name-prefix DTC \
     --input genome.fna.gz --output DTC.gff3 \
