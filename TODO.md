@@ -283,7 +283,9 @@ Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
       letters (index seeds, 2026-10-09) or 5 exact letters follow; for
       `~pN[m,d,i]` with inserts or deletes, when pN has at least
       4 x (m + d + i + 1) letters (2026-10-14); else every gap length
-      is checked (`--lint` says slow).  A range followed by an inexact
+      is checked (`--lint` says slow; a short `~pN[m,d,i]` checks them
+      with Myers' bit-parallel filter, about 30 x faster than before,
+      but still much slower than with seeds).  A range followed by an inexact
       word, `pN` with errors, a weight matrix or another range is
       searched length by length (slow for wide ranges such as
       `50...30000`).

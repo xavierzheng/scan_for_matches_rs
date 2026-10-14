@@ -2486,6 +2486,9 @@ impl Engine {
                     .all(|&mk| base2(mk).is_some())
             });
         if !seeds {
+            if xhi - xlo >= SCAN_LIMIT && (1..=64).contains(&self.mask_tol) {
+                return self.next_start_myers(xlo, xhi, er);
+            }
             return (xlo..=xhi).find(|&x| self.band_ok(x, er));
         }
         let base = self.mem.cd as i64;
@@ -2548,6 +2551,63 @@ impl Engine {
             }
             x += 1;
         }
+    }
+
+    /// `next_start_indel` without seeds (pN too short): Myers' bit-parallel
+    /// edit distance finds the text ends where `masks[..mask_tol]` aligns
+    /// with at most m + d + i edits; only the starts that such an end
+    /// allows are checked by `band_ok`, in order.
+    #[inline(never)]
+    fn next_start_myers(&self, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
+        let n = self.mask_tol;
+        let (ins, del) = (self.mask_ins as i64, self.mask_del as i64);
+        let k = (self.mask_mis + self.mask_ins + self.mask_del) as u32;
+        let all = if n == 64 { !0u64 } else { (1u64 << n) - 1 };
+        let high = 1u64 << (n - 1);
+        // peq[b]: the pattern places that text code b matches
+        let mut peq = [0u64; 16];
+        for (b, p) in peq.iter_mut().enumerate() {
+            if KNOWN_CHAR[b] != 0 {
+                for (j, &mk) in self.masks[..n].iter().enumerate() {
+                    if (b as u8 & mk) == b as u8 {
+                        *p |= 1 << j;
+                    }
+                }
+            }
+        }
+        let (mut pv, mut mv, mut score) = (all, 0u64, n as u32);
+        // starts below `next` are checked
+        let mut next = xlo;
+        let last = er.min(xhi + n as i64 + del - 1);
+        let m = self.mem;
+        let mut t = xlo;
+        while t <= last {
+            let eq = peq[(m.rb(t) & 15) as usize];
+            let xv = eq | mv;
+            let xh = (((eq & pv).wrapping_add(pv)) ^ pv) | eq;
+            let mut ph = mv | !(xh | pv);
+            let mut mh = pv & xh;
+            if ph & high != 0 {
+                score += 1;
+            } else if mh & high != 0 {
+                score -= 1;
+            }
+            ph <<= 1;
+            mh <<= 1;
+            pv = (mh | !(xv | ph)) & all;
+            mv = ph & xv & all;
+            if score <= k {
+                // an alignment ending at t has n - ins ..= n + del letters
+                let lo = next.max(t - n as i64 - del + 1);
+                let hi = xhi.min(t - n as i64 + ins + 1);
+                if let Some(x) = (lo..=hi).find(|&x| self.band_ok(x, er)) {
+                    return Some(x);
+                }
+                next = next.max(hi + 1);
+            }
+            t += 1;
+        }
+        None
     }
 
     /// Can `masks[..mask_tol]` align at `x` (not past `er`) with at most

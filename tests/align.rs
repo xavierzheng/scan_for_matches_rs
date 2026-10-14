@@ -83,10 +83,17 @@ fn align_same_without_indels() {
 }
 
 /// Seeds for `~p2[2,1,1]` after a wide gap (blocks of 4 letters, also at
-/// the start of a run after N): the same hits as without skipping, with and
-/// without --align.
+/// the start of a run after N), and Myers' filter when p2 is too short for
+/// seeds (19 letters): the same hits as without skipping, with and without
+/// --align.
 #[test]
 fn indel_seeds_same_as_no_skip() {
+    for len in [20, 19] {
+        indel_skip_case(len);
+    }
+}
+
+fn indel_skip_case(len: usize) {
     let mut x: u64 = 7;
     let mut rnd = |n: u64| {
         x ^= x << 13;
@@ -96,7 +103,7 @@ fn indel_seeds_same_as_no_skip() {
     };
     let mut seq = String::new();
     for k in 0..6 {
-        let tir: String = (0..20).map(|_| b"ACGT"[rnd(4) as usize] as char).collect();
+        let tir: String = (0..len).map(|_| b"ACGT"[rnd(4) as usize] as char).collect();
         let mut end: Vec<char> = rc(&tir).chars().collect();
         end.remove(3 + rnd(10) as usize);
         end.insert(5 + rnd(10) as usize, 'A');
@@ -112,10 +119,14 @@ fn indel_seeds_same_as_no_skip() {
         );
     }
     let fa = format!(">s\n{seq}\n");
-    let pat = "p1=9...9 p2=20...20 50...700 ~p2[2,1,1] p1";
+    let pat = format!("p1=9...9 p2={len}...{len} 50...700 ~p2[2,1,1] p1");
     for args in [&[][..], &["--align"], &["-c"], &["-c", "--align"]] {
-        let a = hits(pat, args, &fa, &[]);
-        assert!(!a.is_empty(), "{args:?}");
-        assert_eq!(a, hits(pat, args, &fa, &[("SFM_NO_SKIP", "1")]), "{args:?}");
+        let a = hits(&pat, args, &fa, &[]);
+        assert!(!a.is_empty(), "{len} {args:?}");
+        assert_eq!(
+            a,
+            hits(&pat, args, &fa, &[("SFM_NO_SKIP", "1")]),
+            "{len} {args:?}"
+        );
     }
 }
