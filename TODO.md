@@ -41,6 +41,11 @@
       Maverick.  Hits that only the indel version finds, minus the
       shuffled rate, are the gain.  Do the option only if that gain is
       large.
+      Result (2026-10-14, `bench_mut/REPORT.md` section 5): the gain is
+      large.  New elements (real minus shuffled) as a share of the mm2
+      count: DTM_G 24 %, DTM_unanchored 93 %, DTE 77 %, Maverick 48 %.
+      But `[2,1,1]` is very slow now: 9-93 h on 100 Mb with `-t 40`
+      (mm2: 34 s or less).  Decision on `--align`: open.
 - [ ] `--progress` with `-t 1` (2026-10-10): the line shows only the
       record searched now, not how far the search is in it (with
       `-t N` it shows the strand and the Mb reached, from the pieces).
