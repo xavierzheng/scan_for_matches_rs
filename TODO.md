@@ -45,7 +45,9 @@
       large.  New elements (real minus shuffled) as a share of the mm2
       count: DTM_G 24 %, DTM_unanchored 93 %, DTE 77 %, Maverick 48 %.
       But `[2,1,1]` is very slow now: 9-93 h on 100 Mb with `-t 40`
-      (mm2: 34 s or less).  Decision on `--align`: open.
+      (mm2: 34 s or less).  Family test (same TIR as an mm2
+      element or another new hit, section 6): at least 13-41 % more
+      real-family elements than mm2; random k-mers 0-1 %.  Decision on `--align`: open.
 - [ ] `--progress` with `-t 1` (2026-10-10): the line shows only the
       record searched now, not how far the search is in it (with
       `-t N` it shows the strand and the Mb reached, from the pieces).
