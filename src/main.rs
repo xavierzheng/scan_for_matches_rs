@@ -1478,6 +1478,10 @@ output formats (default: the original output):
                      name caught is 1 mismatch when p1 or <p1 uses the name
                      again (default: it matches any letter, as in the
                      original program); against false hits at assembly gaps
+  --align            ~p1[m,d,i] with deletions or insertions tries every
+                     length it can align with (the original one first), so
+                     a hit is not lost when the unit after needs another
+                     length (default: only the original greedy alignment)
   --dedup            with -c: a reverse-strand hit with the same span as a
                      forward hit is dropped; the element gets strand .
 
@@ -1707,7 +1711,7 @@ fn real_main() {
                 "input",
                 "output",
             ],
-            &["dedup", "help", "lint", "explain", "strict-n", "progress"],
+            &["dedup", "help", "lint", "explain", "strict-n", "progress", "align"],
         )
         .unwrap_or_else(|e| long_error(&e));
     // -h only as an option of its own, not as the value of an option
@@ -1734,11 +1738,12 @@ fn real_main() {
     let mut fmt_opts = 0;
     let (mut do_lint, mut do_explain) = (false, false);
     let mut strict_n = false;
+    let mut align = false;
     let mut progress = false;
     for (name, v) in &long {
         if !matches!(
             name.as_str(),
-            "input" | "output" | "lint" | "explain" | "strict-n" | "progress"
+            "input" | "output" | "lint" | "explain" | "strict-n" | "progress" | "align"
         ) {
             fmt_opts += 1;
         }
@@ -1762,6 +1767,7 @@ fn real_main() {
             "lint" => do_lint = true,
             "explain" => do_explain = true,
             "strict-n" => strict_n = true,
+            "align" => align = true,
             "progress" => progress = true,
             _ => fopts.dedup = true,
         }
@@ -1842,6 +1848,7 @@ fn real_main() {
         long_error("--strict-n is for DNA; it cannot be used with -p");
     }
     engine::set_strict_n(strict_n);
+    engine::set_align(align);
     // one or more pattern files
     let pat_files: Vec<(Vec<u8>, std::fs::File)> = (optind as usize..argc as usize)
         .map(|i| {
@@ -1873,6 +1880,7 @@ fn real_main() {
             format: format.is_some(),
             o_value,
             strict_n,
+            align,
         };
         lint_patterns(&pats, do_lint, &ro);
     }

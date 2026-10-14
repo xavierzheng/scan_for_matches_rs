@@ -4,6 +4,7 @@
 usage: fuzz_threads.py BINARY [N_CASES] [SEED] [THREADS]
 
 FUZZ_STRICT_N=1: DNA cases also get --strict-n.
+FUZZ_ALIGN=1: every case also gets --align.
 
 Random patterns (from fuzz_compare.py, normal and stress), FASTA with many
 records of very different lengths, random options (-c, -o, -m, -n, -i,
@@ -28,6 +29,7 @@ SEED = int(sys.argv[3]) if len(sys.argv) > 3 else 1
 T = sys.argv[4] if len(sys.argv) > 4 else "4"
 FMT = os.environ.get("FUZZ_FORMAT") == "1"
 STRICT = os.environ.get("FUZZ_STRICT_N") == "1"
+ALIGN = os.environ.get("FUZZ_ALIGN") == "1"
 
 
 def run(args, pat, inp, d, piece=None, warm=None):
@@ -65,6 +67,8 @@ def one(case):
         args += ["-n", str(r.randint(1, 5))]
     if STRICT and not protein:
         args.append("--strict-n")
+    if ALIGN:
+        args.append("--align")
     if FMT:
         # FUZZ_FORMAT=1: the output formats (numbering, --dedup) must not
         # depend on -t either

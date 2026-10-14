@@ -139,6 +139,7 @@ scan_for_matches --merge [merge options] run1.gff3 run2.gff3 ... > all.gff3
 | `--input FILE` | read the FASTA input from FILE instead of stdin (`-`: stdin) |
 | `--output FILE` | write the hits to FILE instead of stdout (`-`: stdout) |
 | `--strict-n` | a letter that is not A, C, G, T and that a name caught (`N` of an assembly gap, `R`, `Y`, ...) is 1 mismatch when `p1` / `<p1` uses the name again; see [Assembly gaps](#assembly-gaps---strict-n) |
+| `--align` | `~p1[m,d,i]` with deletions or insertions tries every length it can align with (the original one first), so a hit is not lost when the unit after it needs another length.  Default: only the one greedy alignment of the original program |
 | `--progress` | every minute, write a line to stderr: records and Mb done, hits, and the record searched now (with `-t N` also the strand and the Mb reached in it).  stdout does not change; under Slurm the lines go to the `slurm-*.out` file |
 | `-h`, `--help` | show the options and exit |
 

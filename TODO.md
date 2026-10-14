@@ -22,7 +22,7 @@
       improve annotation.  Plant a site by hand with `printf` (PATTERNS.md,
       the skill); for the rate of random hits, run the pattern on a
       shuffled copy of the genome.
-- [ ] Idea (2026-10-10, not decided): `~pN[m,d,i]` with deletions or
+- [x] Idea (2026-10-10, done 2026-10-14): `~pN[m,d,i]` with deletions or
       insertions by "seed and extend" (the idea of BLAST / BWA; the
       tools themselves do not fit: they need a known query, and a TIR
       is not known before the search).  With e = m + d + i changes,
@@ -47,7 +47,11 @@
       But `[2,1,1]` is very slow now: 9-93 h on 100 Mb with `-t 40`
       (mm2: 34 s or less).  Family test (same TIR as an mm2
       element or another new hit, section 6): at least 13-41 % more
-      real-family elements than mm2; random k-mers 0-1 %.  Decision on `--align`: open.
+      real-family elements than mm2; random k-mers 0-1 %.
+      Done (2026-10-14, `bench_mut/REPORT.md` section 7): index seeds +
+      banded DP for `~pN[m,d,i]` after a wide gap (default, same
+      output; Maverick `[2,1,1]` 9.4 h → 280 s), and `--align` (every
+      alignment length; greedy misses 16.7 % → 0 %).
 - [ ] `--progress` with `-t 1` (2026-10-10): the line shows only the
       record searched now, not how far the search is in it (with
       `-t N` it shows the strand and the Mb reached, from the pieces).
@@ -274,13 +278,15 @@ Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
 `--lint` gives a note for the slow wide gaps.
 
 - Gap skipping works only when the range is followed by an exact
-      word, an exact `~pN`, `~pN[m,0,0]` or an exact `pN`.  For
+      word, an exact `~pN`, `~pN[m,d,i]` or an exact `pN`.  For
       `~pN[m,0,0]` it is fast only when pN has at least 5 x (m + 1)
-      letters (index seeds, 2026-10-09) or 5 exact letters follow; else
-      every gap length is checked (`--lint` says slow).  A range
-      followed by an inexact word, `pN` with errors, `~pN` with inserts
-      or deletes, a weight matrix or another range is searched length by
-      length (slow for wide ranges such as `50...30000`).
+      letters (index seeds, 2026-10-09) or 5 exact letters follow; for
+      `~pN[m,d,i]` with inserts or deletes, when pN has at least
+      4 x (m + d + i + 1) letters (2026-10-14); else every gap length
+      is checked (`--lint` says slow).  A range followed by an inexact
+      word, `pN` with errors, a weight matrix or another range is
+      searched length by length (slow for wide ranges such as
+      `50...30000`).
 - With `-t N` on many long records and a fast pattern, splitting
       long records into pieces is slower than one thread per record
       (each thread copied each long record, until the shared strands;

@@ -9,6 +9,30 @@
   change.  Long Slurm jobs now show in `slurm-*.out` how far they are.
   Example (A1-A3 of B. napus, `-t 8`):
   `scan_for_matches: [0:00:35] 1 records (31.0 Mb) done, 205 hits; now NC_063435.1 (29.6 Mb), pattern 1/1, strand +, at 23.1 Mb`
+- `--align`: `~pN[m,d,i]` with deletions or insertions tries every
+  length it can align with (the one of the original greedy matcher
+  first, then the others, shortest first).  Without it the matcher
+  takes one alignment, and a hit is lost when the unit after it (for
+  example the TSD) needs another length: for `[2,1,1]` that was 16.7 %
+  of planted TIRs, with `--align` 0 % (`bench_mut/greedy.py --tir`).
+  Off by default (the hits then differ from the C program).
+
+### Faster
+- A wide gap followed by `~pN[m,d,i]` with deletions or insertions
+  checked every gap length.  Now the gap lengths come from index seeds
+  (one of m + d + i + 1 blocks matches exactly, shifted by at most d or
+  i), checked by banded dynamic programming before the matcher runs.
+  Needs pN of at least 4 x (m + d + i + 1) letters.  The output does
+  not change.  `~p2[2,1,1]` on 100 Mb of B. napus (`-t 40`): Maverick
+  9.4 h → 280 s, DTM_G 15.2 h → 3.6 h.
+
+### Changed
+- `--lint`: "slow" now also knows the seeds of `~pN[m,d,i]`; the greedy
+  note for `~pN` with deletions and insertions says "add --align" (none
+  with `--align`).
+- Tests: `tests/align.rs`; `fuzz_skip.py --tir` also with indels,
+  `FUZZ_ALIGN=1` for `fuzz_skip.py` and `fuzz_threads.py`;
+  `SFM_NO_SKIP=1` (tests only) turns gap skipping off.
 
 ## 0.4.2 — 2026-10-10
 

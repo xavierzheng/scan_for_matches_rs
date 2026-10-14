@@ -114,9 +114,10 @@ The TIR transposon, unit by unit:
    way).  Fast: the gap is followed by an exact word, an exact `p1`, an
    exact `~p1`, or `~p1[m,0,0]` (mismatches only) when `p1` has at least
    5 x (m + 1) letters (10 for `[1,0,0]`) or 5 exact letters follow it
-   (`~p2[1,0,0] TAGTG`).  Slow: a word with errors (`TAGTG[1,0,0]`),
-   `p1[1,0,0]`, any unit with deletions/insertions, or a short
-   `~p2[m,0,0]` with few exact letters after it.  `--lint` says "slow"
+   (`~p2[1,0,0] TAGTG`), or `~p1[m,d,i]` with deletions/insertions when
+   `p1` has at least 4 x (m + d + i + 1) letters (20 for `[2,1,1]`).
+   Slow: a word with errors (`TAGTG[1,0,0]`), `p1[1,0,0]`, a short
+   `~p2[m,d,i]`, or a short `~p2[m,0,0]` with few exact letters after it.  `--lint` says "slow"
    for each of these.  So put the mismatches on the `~p2[m,0,0]` right
    after the gap, and keep the words exact.
 10. **Hits do not overlap**: after a hit the search goes on after its end.

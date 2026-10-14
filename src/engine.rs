@@ -130,6 +130,23 @@ pub struct KIndex {
     generation: u64,
     starts: Vec<u32>,
     pos: Vec<u32>,
+    /// starts of runs of plain bases (the base before is not plain, or
+    /// there is none): a k-mer there has no k+1-mer that ends at it
+    runs: Vec<u32>,
+}
+
+/// `runs` of `KIndex`.
+fn plain_runs(seq: &[u8]) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut prev = false;
+    for (i, &c) in seq.iter().enumerate() {
+        let plain = base2(c).is_some();
+        if plain && !prev {
+            out.push(i as u32);
+        }
+        prev = plain;
+    }
+    out
 }
 
 /// The coded sequence of one strand of a long record, shared by all the
@@ -168,6 +185,15 @@ static STRICT_N: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 
 pub fn set_strict_n(on: bool) {
     STRICT_N.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `--align`: `~pN[m,d,i]` with deletions or insertions tries every
+/// alignment length (the C one first), not only the C one.  Read by
+/// `Engine::new`.
+static ALIGN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_align(on: bool) {
+    ALIGN.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// 2-bit value of a plain base code, or None.
@@ -267,6 +293,7 @@ fn build_index_par(seq: &[u8], threads: usize) -> KIndex {
         generation: 0,
         starts,
         pos,
+        runs: plain_runs(seq),
     }
 }
 
@@ -279,7 +306,9 @@ fn build_index(seq: &[u8], reuse: Option<KIndex>) -> KIndex {
         generation: 0,
         starts: Vec::new(),
         pos: Vec::new(),
+        runs: Vec::new(),
     });
+    idx.runs = plain_runs(seq);
     idx.starts.clear();
     idx.starts.resize(nkeys + 1, 0);
     // pass 1: count, pass 2: fill
@@ -991,6 +1020,10 @@ pub struct Engine {
     /// may have `mask_mis` mismatches; the other masks must match
     mask_tol: usize,
     mask_mis: i32,
+    /// deletions and insertions allowed in `masks[..mask_tol]`
+    /// (`~pN[m,d,i]`): checked by `band_ok`, not `masks_match_at`
+    mask_ins: i32,
+    mask_del: i32,
     /// masks checked one by one in `masks_match_at` (the ones not covered
     /// by the index key, the tolerant part or `mask_words`)
     mask_bytes: [(usize, usize); 2],
@@ -1007,6 +1040,8 @@ pub struct Engine {
     hit_slots: Vec<u32>,
     /// `--strict-n` (DNA only)
     strict_n: bool,
+    /// `--align`
+    align: bool,
 }
 
 // An engine owns its memory blocks (the raw pointers point only into
@@ -1060,6 +1095,8 @@ impl Engine {
             mask_words: Vec::new(),
             mask_tol: 0,
             mask_mis: 0,
+            mask_ins: 0,
+            mask_del: 0,
             mask_bytes: [(0, 0); 2],
             skip_chains: Vec::new(),
             p2c_lo: [0; 128],
@@ -1067,6 +1104,7 @@ impl Engine {
             track_units: false,
             hit_slots: Vec::new(),
             strict_n: STRICT_N.load(std::sync::atomic::Ordering::Relaxed),
+            align: ALIGN.load(std::sync::atomic::Ordering::Relaxed),
         };
         for (i, v) in KNOWN_CHAR.iter().enumerate() {
             e.wb(e.mem.sa(A_KNOWN_CHAR) + i as i64, *v);
@@ -2027,7 +2065,8 @@ impl Engine {
                         0
                     };
                     self.w64(pu + O_SKIP, target);
-                    if target != 0 {
+                    // after `~pN[m,d,i]` with indels the next unit has no fixed place
+                    if target != 0 && !self.has_indels(target) {
                         let chain = self.skip_chain(pu, target);
                         if !chain.is_empty() {
                             self.skip_chains.push((pu, chain));
@@ -2043,6 +2082,10 @@ impl Engine {
             }
             pu = self.r64(pu + O_NXT);
         }
+    }
+
+    fn has_indels(&self, n: i64) -> bool {
+        self.r32(n + O_TYPE) == COMPL_PUNIT && (self.r32(n + O_U0) != 0 || self.r32(n + O_U4) != 0)
     }
 
     /// The units after `n` (the unit after the range `range`) that
@@ -2074,8 +2117,10 @@ impl Engine {
     /// Can lengths of the range `range` be skipped when `n` follows it?
     /// `n` must check a fixed string: not one taken from the range itself
     /// (its text changes with the gap length).
-    /// With `mismatches`, also a reverse complement with mismatches only
-    /// (`~pN[m,0,0]`): it has a fixed length and no other choice to try.
+    /// With `mismatches`, also a reverse complement with errors
+    /// (`~pN[m,d,i]`): `next_start` skips only starts where it cannot
+    /// match.  With deletions or insertions its length is not fixed, so no
+    /// units after it are checked with it (`skip_chain`).
     fn skippable(&self, n: i64, range: i64, mismatches: bool) -> bool {
         if self.r32(n + O_ANCH) == 0 {
             return false;
@@ -2090,9 +2135,7 @@ impl Engine {
         match self.r32(n + O_TYPE) {
             EXACT_PUNIT => self.r32(n + O_U0) >= 1,
             COMPL_PUNIT => {
-                self.r32(n + O_U16) == -1
-                    && (no_errors(n)
-                        || (mismatches && self.r32(n + O_U0) == 0 && self.r32(n + O_U4) == 0))
+                self.r32(n + O_U16) == -1 && (no_errors(n) || mismatches)
             }
             REPEAT_PUNIT => no_errors(n),
             _ => false,
@@ -2113,8 +2156,14 @@ impl Engine {
         let r = self.push_unit_masks(n, &mut masks, max);
         self.mask_mis = 0;
         self.mask_tol = 0;
-        if self.r32(n + O_TYPE) == COMPL_PUNIT && self.r32(n + O_U8) != 0 {
+        self.mask_ins = 0;
+        self.mask_del = 0;
+        if self.r32(n + O_TYPE) == COMPL_PUNIT
+            && (self.r32(n + O_U8) != 0 || self.has_indels(n))
+        {
             self.mask_mis = self.r32(n + O_U8);
+            self.mask_ins = self.r32(n + O_U0);
+            self.mask_del = self.r32(n + O_U4);
             self.mask_tol = masks.len();
         }
         if r == Some(Some(())) {
@@ -2290,6 +2339,9 @@ impl Engine {
             Some(None) => return Some(xlo),
             Some(Some(())) => {}
         }
+        if self.mask_ins != 0 || self.mask_del != 0 {
+            return self.next_start_indel(xlo, xhi, er);
+        }
         let len = self.masks.len();
         let tol = self.mask_tol;
         // the index key: the first KIDX_K plain bases that must match
@@ -2418,6 +2470,139 @@ impl Engine {
         }
     }
 
+    /// `next_start_far` for `~pN[m,d,i]` with deletions or insertions: the
+    /// first start in `xlo..=xhi` where `band_ok` holds.  With e = m + d + i
+    /// changes, one of e + 1 blocks of `masks[..mask_tol]` matches exactly,
+    /// shifted by -i..=d: the starts come from the index lists of the
+    /// blocks.  A block of KIDX_K - 1 letters is looked up as the KIDX_K-mers
+    /// that end with it, and at the start of each run of plain bases.
+    #[inline(never)]
+    fn next_start_indel(&mut self, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
+        let (ins, del) = (self.mask_ins as i64, self.mask_del as i64);
+        let parts = (self.mask_mis + self.mask_ins + self.mask_del) as usize + 1;
+        let bs = self.mask_tol / parts;
+        let kl = bs.min(KIDX_K);
+        let seeds = xhi - xlo >= SCAN_LIMIT
+            && bs + 1 >= KIDX_K
+            && (0..parts).all(|b| {
+                self.masks[b * bs..b * bs + kl]
+                    .iter()
+                    .all(|&mk| base2(mk).is_some())
+            });
+        if !seeds {
+            return (xlo..=xhi).find(|&x| self.band_ok(x, er));
+        }
+        let base = self.mem.cd as i64;
+        if self.shared_kidx.is_none() {
+            self.build_kidx(er);
+        }
+        let idx = match &self.shared_kidx {
+            Some(sh) => sh.get_or_init(|| {
+                let n = (er - base + 1).max(0) as usize;
+                let seq = unsafe { std::slice::from_raw_parts(self.mem.cd as *const u8, n) };
+                build_index_par(seq, self.index_threads)
+            }),
+            None => self.kidx.as_ref().unwrap(),
+        };
+        // (positions, off): a position p is a start in off + p ..= off + p + span
+        let span = ins + del;
+        let mut lists: Vec<(&[u32], i64)> = Vec::new();
+        for b in 0..parts {
+            let o = (b * bs) as i64;
+            let key = self.masks[b * bs..b * bs + kl]
+                .iter()
+                .fold(0u32, |key, &mk| key << 2 | base2(mk).unwrap());
+            let list = |key: u32| {
+                &idx.pos[idx.starts[key as usize] as usize..idx.starts[key as usize + 1] as usize]
+            };
+            // (positions, offset of the block from the position)
+            let found: Vec<(&[u32], i64)> = if kl == KIDX_K {
+                vec![(list(key), 0)]
+            } else {
+                let mut v: Vec<_> = (0..4u32).map(|c| (list(c << (2 * kl) | key), 1)).collect();
+                v.push((&idx.runs[..], 0));
+                v
+            };
+            for (l, to_block) in found {
+                let off = base + to_block - o - del;
+                lists.push((&l[l.partition_point(|&p| off + p as i64 + span < xlo)..], off));
+            }
+        }
+        let mut x = xlo;
+        loop {
+            // the smallest start not below x of any list
+            let mut lo = i64::MAX;
+            for (l, off) in lists.iter_mut() {
+                while l.first().is_some_and(|&p| *off + p as i64 + span < x) {
+                    *l = &l[1..];
+                }
+                if let Some(&p) = l.first() {
+                    lo = lo.min(*off + p as i64);
+                }
+            }
+            x = x.max(lo);
+            if x > xhi {
+                return None;
+            }
+            if self.band_ok(x, er) {
+                return Some(x);
+            }
+            x += 1;
+        }
+    }
+
+    /// Can `masks[..mask_tol]` align at `x` (not past `er`) with at most
+    /// m + d + i changes, the text at most i shorter and d longer?  A
+    /// filter: the matcher (with its own limits) checks the starts kept.
+    #[inline(never)]
+    fn band_ok(&self, x: i64, er: i64) -> bool {
+        const W: usize = 32;
+        let (ins, del) = (self.mask_ins as i64, self.mask_del as i64);
+        let w = (ins + del + 1) as usize;
+        if w > W {
+            return true;
+        }
+        let max = self.mask_mis + self.mask_ins + self.mask_del;
+        let inf = i32::MAX / 2;
+        let m = self.mem;
+        // cost[j]: pattern 0..k against text x..x+k+d, with d = j - ins
+        let mut cost = [inf; W];
+        for j in 0..w {
+            let d = j as i64 - ins;
+            if d >= 0 {
+                cost[j] = d as i32;
+            }
+        }
+        for (k, &mk) in self.masks[..self.mask_tol].iter().enumerate() {
+            let mut next = [inf; W];
+            let mut best = inf;
+            for j in 0..w {
+                let t = k as i64 + j as i64 - ins; // text offset of pattern k
+                let mut c = inf;
+                if t >= 0 && x + t <= er {
+                    let b = m.rb(x + t) & 15;
+                    let hit = KNOWN_CHAR[b as usize] != 0 && (b & mk) == b;
+                    c = cost[j] + if hit { 0 } else { 1 };
+                }
+                // pattern k without text: from d + 1 to d
+                if j + 1 < w {
+                    c = c.min(cost[j + 1] + 1);
+                }
+                // a text letter without pattern: from d - 1 to d
+                if j > 0 && x + t <= er {
+                    c = c.min(next[j - 1] + 1);
+                }
+                next[j] = c;
+                best = best.min(c);
+            }
+            if best > max {
+                return false;
+            }
+            cost = next;
+        }
+        true
+    }
+
     /// Build the k-mer index of the current coded sequence (up to `er`).
     fn build_kidx(&mut self, er: i64) {
         if self
@@ -2497,7 +2682,10 @@ impl Engine {
                     return 0;
                 }
                 self.set_anchors(self.mem.sa(A_PU_S), 0);
-                let skip = self.seq_type == DNA && !self.uses_earlier_state();
+                // SFM_NO_SKIP: tests compare against the search without skips
+                let skip = self.seq_type == DNA
+                    && !self.uses_earlier_state()
+                    && std::env::var_os("SFM_NO_SKIP").is_none();
                 self.skip_chains.clear();
                 self.setup_skips(self.mem.sa(A_PU_S), skip, 0);
                 self.w64(self.mem.sa(A_AD_PU_S), self.mem.sa(A_PU_S));
@@ -2791,6 +2979,84 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// `--align`: the lengths the unit `cr` (`~pN[m,d,i]`) can match at
+    /// `sr` with at most m mismatches, d deletions and i insertions: the
+    /// one `loose_match` takes first, then the others, shortest first.
+    fn align_lens(&self, cr: i64, sr: i64, er: i64) -> Vec<i32> {
+        let m = self.mem;
+        let pu1 = m.names(self.r32(cr + O_U12));
+        let (p1, ln) = (self.r64(pu1 + O_HIT), self.r32(pu1 + O_MLEN));
+        let (ins, del, mis) = (self.r32(cr + O_U0), self.r32(cr + O_U4), self.r32(cr + O_U8));
+        let rs = self.r32(cr + O_U16);
+        let avail = er + 1 - sr;
+        let g = self.loose_match(One::Mem(p1), ln, sr, avail as i32, ins, del, mis, rs, true);
+        let mut out: Vec<i32> = if g != 0 { vec![g - 1] } else { vec![] };
+        // the reverse complement of the name's letters; one not known: no
+        // match (as in loose_match)
+        let n = ln.max(0) as usize;
+        let mut pat = Vec::with_capacity(n);
+        for k in 0..n {
+            let c = m.one_get(&One::Mem(p1), (n - 1 - k) as i64);
+            if !m.known_char(c & 15) {
+                return out;
+            }
+            pat.push(compl_code(c as u32, rs));
+        }
+        // cost[a * nd + b]: fewest mismatches with a insertions (a pattern
+        // letter without text) and b deletions (a text letter without
+        // pattern), pattern 0..k against text 0..k - a + b
+        let (ni, nd) = (ins.max(0) as usize + 1, del.max(0) as usize + 1);
+        let inf = i32::MAX / 2;
+        let mut cost = vec![inf; ni * nd];
+        cost[0] = 0;
+        let mut lens = Vec::new();
+        for k in 0..=n {
+            for a in 0..ni {
+                for b in 1..nd {
+                    let j = k as i64 - a as i64 + b as i64 - 1;
+                    if j < avail {
+                        cost[a * nd + b] = cost[a * nd + b].min(cost[a * nd + b - 1]);
+                    }
+                }
+            }
+            if k == n {
+                for a in 0..ni {
+                    for b in 0..nd {
+                        if cost[a * nd + b] <= mis {
+                            lens.push((n + b - a) as i32);
+                        }
+                    }
+                }
+                break;
+            }
+            let mut next = vec![inf; ni * nd];
+            for a in 0..ni {
+                for b in 0..nd {
+                    let c = cost[a * nd + b];
+                    if c >= inf {
+                        continue;
+                    }
+                    let j = k as i64 - a as i64 + b as i64;
+                    if j < avail {
+                        let t = m.rb(sr + j);
+                        let hit = m.known_char(t & 15) && m.ex_matches(rs, t, pat[k]);
+                        let e = &mut next[a * nd + b];
+                        *e = (*e).min(c + if hit { 0 } else { 1 });
+                    }
+                    if a + 1 < ni {
+                        let e = &mut next[(a + 1) * nd + b];
+                        *e = (*e).min(c);
+                    }
+                }
+            }
+            cost = next;
+        }
+        lens.sort_unstable();
+        lens.dedup();
+        out.extend(lens.into_iter().filter(|&l| l != g - 1 || g == 0));
+        out
     }
 
     /// next_punit(); in fast mode every pointer is checked before it is
@@ -3274,6 +3540,20 @@ impl Engine {
                             };
                             let rs = g32!(O_U16);
                             let (ins, del, mis) = (g32!(O_U0), g32!(O_U4), g32!(O_U8));
+                            if self.align && (ins != 0 || del != 0) {
+                                // each length is a choice; O_U20: the one taken
+                                let lens = self.align_lens(cr, sr, er);
+                                if lens.is_empty() {
+                                    break 'tryl;
+                                }
+                                s64!(O_HIT, sr);
+                                s32!(O_U20, 0);
+                                if lens.len() > 1 {
+                                    push_br!();
+                                }
+                                sr += lens[0] as i64;
+                                success!('tryl, 'main);
+                            }
                             if rs != -1 || ins != 0 || del != 0 || mis != 0 {
                                 let i = self.loose_match(
                                     One::Mem(p1),
@@ -3484,6 +3764,20 @@ impl Engine {
                     LLIM_PUNIT | ANY_PUNIT | EXACT_PUNIT | SIM_PUNIT | WEIGHT_PUNIT => {
                         sr += 1;
                         continue 'main;
+                    }
+                    // --align: the next length
+                    COMPL_PUNIT => {
+                        let lens = self.align_lens(cr, sr, er);
+                        let k = g32!(O_U20) as usize + 1;
+                        if k >= lens.len() {
+                            continue 'backl;
+                        }
+                        s32!(O_U20, k as i32);
+                        if k + 1 < lens.len() {
+                            br = cr;
+                        }
+                        sr += lens[k] as i64;
+                        success!('main, 'main);
                     }
                     OR_PUNIT => {
                         if g32!(O_U24) == 1 {

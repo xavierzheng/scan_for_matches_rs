@@ -44,6 +44,8 @@ pub struct RunOpts {
     pub o_value: Option<Vec<u8>>,
     /// `--strict-n`
     pub strict_n: bool,
+    /// `--align`
+    pub align: bool,
 }
 
 const MAX_NAMES: i32 = 50;
@@ -825,26 +827,36 @@ impl<'a> Pat<'a> {
         let own = |k: i32| self.named(k).is_some_and(|d| d.slot == range.slot);
         match &n.kind {
             Kind::Word(_, e) => e.exact(),
-            Kind::Compl(None, k, e) => !own(*k) && e.ins == 0 && e.del == 0,
+            Kind::Compl(None, k, _) => !own(*k),
             Kind::Repeat(k, e) => !own(*k) && e.exact(),
             _ => false,
         }
     }
 
-    /// `n` (after a wide range) is not `~pK[m,0,0]`, or the engine finds
+    /// `n` (after a wide range) is not `~pK[m,d,i]`, or the engine finds
     /// its gap lengths by index lookups: pK has at least 5 x (m + 1)
-    /// letters (seeds), or 5 exact plain letters follow (`rest`).  Else
-    /// every gap length is checked.
+    /// letters (seeds), or 5 exact plain letters follow (`rest`).  With
+    /// deletions or insertions: at least 4 x (m + d + i + 1) letters, and
+    /// `rest` does not help.  Only the first 29 letters are used for seeds.
+    /// Else every gap length is checked.
     fn looked_up(&self, n: &Unit, rest: &[Unit]) -> bool {
         let Kind::Compl(None, k, e) = &n.kind else {
             return true;
         };
-        if e.mis == 0 {
+        if e.mis == 0 && e.ins == 0 && e.del == 0 {
             return true;
         }
         let len = |k: i32| self.named(k).map(|d| self.len_range(d, 0));
-        if len(*k).is_some_and(|(lo, _)| lo >= 5 * (e.mis as i64 + 1)) {
+        let (per, parts) = if e.ins == 0 && e.del == 0 {
+            (5, e.mis as i64 + 1)
+        } else {
+            (4, (e.mis + e.ins + e.del) as i64 + 1)
+        };
+        if len(*k).is_some_and(|(lo, _)| lo.min(29) >= per * parts) {
             return true;
+        }
+        if per == 4 {
+            return false;
         }
         let mut run = 0;
         for u in rest {
@@ -1279,13 +1291,15 @@ impl Checker<'_, '_> {
                     format!("`{t}` allows {m} in {len} letters, so it matches any {len} letters"),
                 );
             }
-            if e.ins > 0 && e.del > 0 {
+            let compl = matches!(u.kind, Kind::Compl(..));
+            if e.ins > 0 && e.del > 0 && !(compl && self.o.align) {
+                let fix = if compl { " (add --align to try every length)" } else { "" };
                 self.add(
                     note,
                     at,
                     format!(
                         "`{t}` has deletions and insertions: the matcher takes one greedy alignment \
-                     and can miss some matches"
+                     and can miss some matches{fix}"
                     ),
                 );
             }
@@ -1320,7 +1334,14 @@ impl Checker<'_, '_> {
         let mut slow = Vec::new();
         pat.slow(&pat.ps.units, None, skip, &mut slow);
         for (r, n) in slow {
-            let why = if skip && pat.skippable(n, r) {
+            let indels = matches!(&n.kind, Kind::Compl(_, _, e) if e.ins > 0 || e.del > 0);
+            let why = if skip && pat.skippable(n, r) && indels {
+                format!(
+                    "`{}` has too few letters to look up: give the name at least \
+                     4 letters per allowed change (m + d + i) + 4 (at most 28 letters are used)",
+                    pat.text(n)
+                )
+            } else if skip && pat.skippable(n, r) {
                 format!(
                     "`{}` has mismatches and too few letters to look up: give the name \
                      at least 5 letters per allowed mismatch + 5, or put 5 exact letters after it",
@@ -1821,6 +1842,7 @@ mod tests {
             format: false,
             o_value: None,
             strict_n: false,
+            align: false,
         }
     }
 
@@ -2467,6 +2489,21 @@ mod tests {
         );
         fires("p2=12...12 50...30000 ~p2[2,0,0] ACG", "note", "slow");
         fires("p2=8...12 50...30000 ~p2[1,0,0]", "note", "slow");
+        // ~pN[m,d,i] with indels: 4 x (m + d + i + 1) letters
+        fires(
+            "p2=12...12 50...30000 ~p2[2,1,1]",
+            "note",
+            "4 letters per allowed change",
+        );
+        fires("p2=19...19 50...30000 ~p2[2,1,1] ACGTA", "note", "slow");
+        assert!(!lint_s("p2=20...20 50...30000 ~p2[2,1,1]").contains("slow"));
+        assert!(!lint_s("p2=8...8 50...30000 ~p2[0,1,0]").contains("slow"));
+        // --align: no greedy note for ~pN, still for a word
+        fires("p1=5...5 0...9 ~p1[0,1,1]", "note", "add --align");
+        let mut o = opts(false);
+        o.align = true;
+        assert!(!lint_o("p1=5...5 0...9 ~p1[0,1,1]", &o).0.contains("greedy"));
+        assert!(lint_o("ACGT[1,1,1]", &o).0.contains("greedy"));
         for p in [
             "TA p2=12...12 50...30000 ~p2 TA",
             "p2=10...10 50...30000 ~p2[1,0,0] TA",

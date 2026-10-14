@@ -11,7 +11,10 @@ or of the range), which `next_start` checks together.
 
 --tir: TIR patterns whose reverse complement allows mismatches
 (`p2=10...24 60...8000 ~p2[1,0,0]`, 1 to 3 mismatches, few exact letters
-after it), so gap lengths are found by index seeds of the tolerant part.
+after it), so gap lengths are found by index seeds of the tolerant part;
+also with deletions and insertions (`~p2[2,1,1]`), planted TIRs with
+indels.  FUZZ_ALIGN=1: both runs get `--align`, and OLD runs with
+SFM_NO_SKIP=1 (no skipping; give the same binary twice).
 """
 import os
 import random
@@ -22,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 CHAIN = "--chain" in sys.argv
 TIR = "--tir" in sys.argv
+ALIGN = os.environ.get("FUZZ_ALIGN") == "1"
 ARGS = [a for a in sys.argv[1:] if a not in ("--chain", "--tir")]
 OLD, NEW = os.path.abspath(ARGS[0]), os.path.abspath(ARGS[1])
 N = int(ARGS[2]) if len(ARGS) > 2 else 1000
@@ -139,7 +143,11 @@ def tir_pattern(r):
     units.append("p2=%d...%d" % (k, k + r.choice([0, 0, 2])))
     a = r.randint(0, 60)
     units.append("%d...%d" % (a, a + r.choice([60, 300, 2000, 8000])))
-    units.append("~p2[%d,0,0]" % r.choice([1, 1, 2, 3]))
+    if r.random() < 0.5:
+        units.append("~p2[%d,0,0]" % r.choice([1, 1, 2, 3]))
+    else:
+        m, d, i = r.choice([(0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1), (1, 1, 1), (2, 1, 1), (1, 2, 1), (2, 0, 2)])
+        units.append("~p2[%d,%d,%d]" % (m, d, i))
     if r.random() < 0.3:
         units.append(r.choice(["ta", "gtg", "c", "acgt"]))
     if tsd:
@@ -166,6 +174,13 @@ def sequence(r, n):
         end = list(rc(tir))
         for _ in range(r.choice([0, 0, 1, 2])):
             end[r.randrange(len(end))] = r.choice("acgtn")
+        if TIR:
+            for _ in range(r.choice([0, 0, 1, 2])):
+                k = r.randrange(len(end))
+                if r.random() < 0.5:
+                    del end[k]
+                else:
+                    end.insert(k, r.choice("acgt"))
         s[i:i] = list(tsd + tir + mid + "".join(end) + tsd)
     if r.random() < 0.2:
         for _ in range(r.randint(1, 10)):
@@ -179,14 +194,15 @@ OUT_LIMIT = 20_000_000
 WORKERS = 4
 
 
-def run(b, args, pat, inp):
+def run(b, args, pat, inp, env=None):
     import hashlib
     import threading
     with tempfile.TemporaryDirectory() as d:
         pp = os.path.join(d, "pat")
         with open(pp, "w") as f:
             f.write(pat + "\n")
-        p = subprocess.Popen([b] + args + [pp], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen([b] + args + [pp], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             env=dict(os.environ, **(env or {})))
         def feed():
             try:
                 p.stdin.write(inp)
@@ -223,7 +239,9 @@ def one(case):
     sizes = [300, 2000, 6000, 20000] if TIR else [50, 300, 2000, 6000]
     recs = "".join(">r%d\n%s\n" % (k, sequence(r, r.choice(sizes))) for k in range(r.randint(1, 3)))
     args = (["-c"] if r.random() < 0.4 else []) + (["-o", "1"] if r.random() < 0.3 else [])
-    a = run(OLD, args, pat, recs.encode())
+    if ALIGN:
+        args = ["--align"] + args
+    a = run(OLD, args, pat, recs.encode(), {"SFM_NO_SKIP": "1"} if ALIGN else None)
     b = run(NEW, args, pat, recs.encode())
     if b is None and a is not None and a != "big":
         return ("NEW-timeout", (pat, args, len(recs)))

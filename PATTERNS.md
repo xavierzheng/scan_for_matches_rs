@@ -309,7 +309,7 @@ unit  line  text         meaning
 More watch-outs:
 
 * Errors make the search slower.
-* The program is greedy: it takes the first alignment it finds and does not try all alignments. So it can miss a match when it uses deletions and insertions together (`--lint` gives a note).
+* The program is greedy: it takes the first alignment it finds and does not try all alignments. So it can miss a match when it uses deletions and insertions together (`--lint` gives a note). For a reverse complement (`~p1[m,d,i]`), add `--align`: then every length that aligns is tried, and no match is lost.
 * To avoid doubt about direction, use only mismatches `[m,0,0]` when you can.
 * The same `[m,d,i]` works after a name (`p1[1,0,0]`) and after a reverse complement (`~p1[1,0,0]`).
 
@@ -1101,7 +1101,7 @@ w9.pat:1: note: slow: each gap length of `500...15000` is tried (`TAGTG[1,0,0]` 
 0 errors, 0 warnings, 1 notes
 ```
 
-Right: put the exact words first, and put errors only on the `~p2[1,0,0]` unit. It is fast when `p2` has at least 10 letters (5 more per extra mismatch: 15 for `[2,0,0]`), or when 5 exact letters follow it, as `TAGTG` here. Or make the gap narrower. `--lint` tells you when it is slow.
+Right: put the exact words first, and put errors only on the `~p2[1,0,0]` unit. It is fast when `p2` has at least 10 letters (5 more per extra mismatch: 15 for `[2,0,0]`), or when 5 exact letters follow it, as `TAGTG` here. With deletions or insertions (`~p2[2,1,1]`) it is fast when `p2` has at least 4 letters per allowed change + 4 (20 for `[2,1,1]`); exact letters after it do not help. Or make the gap narrower. `--lint` tells you when it is slow.
 
 ### 9. Two lines joined into one pattern
 
