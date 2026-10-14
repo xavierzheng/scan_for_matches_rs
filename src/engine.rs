@@ -2134,9 +2134,7 @@ impl Engine {
         };
         match self.r32(n + O_TYPE) {
             EXACT_PUNIT => self.r32(n + O_U0) >= 1,
-            COMPL_PUNIT => {
-                self.r32(n + O_U16) == -1 && (no_errors(n) || mismatches)
-            }
+            COMPL_PUNIT => self.r32(n + O_U16) == -1 && (no_errors(n) || mismatches),
             REPEAT_PUNIT => no_errors(n),
             _ => false,
         }
@@ -2158,9 +2156,7 @@ impl Engine {
         self.mask_tol = 0;
         self.mask_ins = 0;
         self.mask_del = 0;
-        if self.r32(n + O_TYPE) == COMPL_PUNIT
-            && (self.r32(n + O_U8) != 0 || self.has_indels(n))
-        {
+        if self.r32(n + O_TYPE) == COMPL_PUNIT && (self.r32(n + O_U8) != 0 || self.has_indels(n)) {
             self.mask_mis = self.r32(n + O_U8);
             self.mask_ins = self.r32(n + O_U0);
             self.mask_del = self.r32(n + O_U4);
@@ -2525,7 +2521,10 @@ impl Engine {
             };
             for (l, to_block) in found {
                 let off = base + to_block - o - del;
-                lists.push((&l[l.partition_point(|&p| off + p as i64 + span < xlo)..], off));
+                lists.push((
+                    &l[l.partition_point(|&p| off + p as i64 + span < xlo)..],
+                    off,
+                ));
             }
         }
         let mut x = xlo;
@@ -2567,10 +2566,10 @@ impl Engine {
         let m = self.mem;
         // cost[j]: pattern 0..k against text x..x+k+d, with d = j - ins
         let mut cost = [inf; W];
-        for j in 0..w {
+        for (j, c) in cost.iter_mut().enumerate().take(w) {
             let d = j as i64 - ins;
             if d >= 0 {
-                cost[j] = d as i32;
+                *c = d as i32;
             }
         }
         for (k, &mk) in self.masks[..self.mask_tol].iter().enumerate() {
@@ -2988,7 +2987,11 @@ impl Engine {
         let m = self.mem;
         let pu1 = m.names(self.r32(cr + O_U12));
         let (p1, ln) = (self.r64(pu1 + O_HIT), self.r32(pu1 + O_MLEN));
-        let (ins, del, mis) = (self.r32(cr + O_U0), self.r32(cr + O_U4), self.r32(cr + O_U8));
+        let (ins, del, mis) = (
+            self.r32(cr + O_U0),
+            self.r32(cr + O_U4),
+            self.r32(cr + O_U8),
+        );
         let rs = self.r32(cr + O_U16);
         let avail = er + 1 - sr;
         let g = self.loose_match(One::Mem(p1), ln, sr, avail as i32, ins, del, mis, rs, true);
@@ -3012,6 +3015,7 @@ impl Engine {
         let mut cost = vec![inf; ni * nd];
         cost[0] = 0;
         let mut lens = Vec::new();
+        #[allow(clippy::needless_range_loop)] // k is also the pattern length done
         for k in 0..=n {
             for a in 0..ni {
                 for b in 1..nd {

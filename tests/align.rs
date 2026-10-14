@@ -101,10 +101,15 @@ fn indel_seeds_same_as_no_skip() {
         end.remove(3 + rnd(10) as usize);
         end.insert(5 + rnd(10) as usize, 'A');
         end[rnd(19) as usize] = 'C';
-        let mid: String = (0..100 + rnd(500)).map(|_| b"ACGT"[rnd(4) as usize] as char).collect();
+        let mid: String = (0..100 + rnd(500))
+            .map(|_| b"ACGT"[rnd(4) as usize] as char)
+            .collect();
         // a run of N right before a block
         let gap = if k % 2 == 0 { "NNNN" } else { "" };
-        seq += &format!("TTAGCATTG{tir}{mid}{gap}{}TTAGCATTG", end.iter().collect::<String>());
+        seq += &format!(
+            "TTAGCATTG{tir}{mid}{gap}{}TTAGCATTG",
+            end.iter().collect::<String>()
+        );
     }
     let fa = format!(">s\n{seq}\n");
     let pat = "p1=9...9 p2=20...20 50...700 ~p2[2,1,1] p1";

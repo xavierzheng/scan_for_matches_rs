@@ -165,7 +165,10 @@ fn progress_goes_to_stderr_only() {
         let err = String::from_utf8(out.stderr).unwrap();
         let lines: Vec<&str> = err.lines().collect();
         assert_eq!(lines.len(), 2, "{err}");
-        assert!(lines[0].ends_with("0 records (0.0 Mb) done, 0 hits; started"), "{err}");
+        assert!(
+            lines[0].ends_with("0 records (0.0 Mb) done, 0 hits; started"),
+            "{err}"
+        );
         let fin = format!("20 records (0.0 Mb) done, {hits} hits; finished");
         assert!(lines[1].ends_with(&fin), "{err} / {fin}");
     }

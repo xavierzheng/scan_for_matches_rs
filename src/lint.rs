@@ -1293,7 +1293,11 @@ impl Checker<'_, '_> {
             }
             let compl = matches!(u.kind, Kind::Compl(..));
             if e.ins > 0 && e.del > 0 && !(compl && self.o.align) {
-                let fix = if compl { " (add --align to try every length)" } else { "" };
+                let fix = if compl {
+                    " (add --align to try every length)"
+                } else {
+                    ""
+                };
                 self.add(
                     note,
                     at,

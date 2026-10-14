@@ -1711,7 +1711,9 @@ fn real_main() {
                 "input",
                 "output",
             ],
-            &["dedup", "help", "lint", "explain", "strict-n", "progress", "align"],
+            &[
+                "dedup", "help", "lint", "explain", "strict-n", "progress", "align",
+            ],
         )
         .unwrap_or_else(|e| long_error(&e));
     // -h only as an option of its own, not as the value of an option
