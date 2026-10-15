@@ -8,7 +8,12 @@ patterns (ranges, hairpins/reverse complements with pairing rules, repeats,
 inexact matches, weight matrices, alternatives, length limits, `^`/`$`,
 `any()`/`notany()` for proteins).
 
-**New to the pattern language?  Start with [`PATTERNS.md`](PATTERNS.md)**:
+**New to this program?  Start with [`USER_GUIDE.md`](USER_GUIDE.md)** ([繁體中文](USER_GUIDE_zh.md)): a
+first run in 1 minute, then a whole genome step by step (Slurm script,
+how to read the GFF3, count, BED, merge), all options, and common
+problems.
+
+**New to the pattern language?  Read [`PATTERNS.md`](PATTERNS.md)**:
 a guide with templates, diagrams, tested examples, common mistakes and a
 glossary.  The original documentation is
 [`README.original`](README.original).  To let an AI assistant write
@@ -29,7 +34,9 @@ patterns for you, see [AI assistant skill](#ai-assistant-skill).
 * `--lint` and `--explain` check and describe a pattern before a long run.
 * 22 ready-made TIR transposon patterns in
   [`tir_scan_patterns/`](tir_scan_patterns/README.md), plus 4 versions
-  that allow 2 mismatches in long TIRs (`tir_scan_patterns/mm2/`).
+  that allow 2 mismatches in long TIRs (`tir_scan_patterns/mm2/`) and 4
+  that also allow 1 deletion and 1 insertion (`tir_scan_patterns/indel/`,
+  use with `--align`).
 
 **Install**
 
@@ -125,7 +132,7 @@ Same command line as the original, or with input and output files:
 scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i ids_to_ignore] [-t N] pattern_file < fasta_input > hits
 scan_for_matches [options] --input fasta_input --output hits pattern_file
 scan_for_matches --format F [options] pattern_file pattern_file ... < fasta_input > hits
-scan_for_matches --lint [-p] [-c] [--dedup] [--strict-n] pattern_file ...
+scan_for_matches --lint [-p] [-c] [--dedup] [--strict-n] [--align] pattern_file ...
 scan_for_matches --explain [-p] pattern_file ...
 scan_for_matches --merge [merge options] run1.gff3 run2.gff3 ... > all.gff3
 ```
@@ -147,6 +154,14 @@ scan_for_matches --merge [merge options] run1.gff3 run2.gff3 ... > all.gff3
 | `--align` | `~p1[m,d,i]` with deletions or insertions tries every length it can align with (the original one first), so a hit is not lost when the unit after it needs another length.  Default: only the one greedy alignment of the original program |
 | `--progress` | every minute, write a line to stderr: records and Mb done, hits, and the record searched now (with `-t N` also the strand and the Mb reached in it).  stdout does not change; under Slurm the lines go to the `slurm-*.out` file |
 | `-h`, `--help` | show the options and exit |
+| `--format F` | output `gff3`, `bed6`, `bed12` or `jsonl` instead of the original output; needed for several pattern files; see [Output formats](#output-formats---format) |
+| `--name-prefix P` | with `--format`: Name of each hit = P + number (default: the `Name=` of the `%@element` label, else `sfm`) |
+| `--name-start N` | with `--format`: first number (default 1) |
+| `--type T` | with `--format`: column 3 of the element (default: the `%@element` type, else `sequence_motif`) |
+| `--dedup` | with `-c`: drop a reverse-strand hit with the same span as a forward hit; the element gets strand `.` |
+| `--lint` | check the pattern files for traps (errors, warnings, notes, "slow"); no input is read; exit status 1 on an error; see [Checking patterns](#checking-patterns---lint-and---explain) |
+| `--explain` | describe each unit of the pattern in plain words; no input is read |
+| `--merge` | join GFF3 files of several runs, remove duplicate elements, give new unique Names (own options: `--overlap F`, `--name-prefix`, `--name-start`, `--output`; `--merge --help`); see [Merging](#merging-several-runs---merge) |
 
 `-i` and `-o` keep the meaning they have in the original program (ids
 to skip, overlapping hits); input and output files are `--input` and
@@ -550,6 +565,30 @@ Typical patterns run at about the speed of the C program (from 0.8× to
 1.3× of its time, depending on the pattern).  Inexact matches with
 mismatches, inserts and deletes together can take longer than in the
 original, because the choices it skipped are now tried.
+
+What is fast after a wide gap (such as `50...30000`), newest first.
+`--lint` says "slow" for the other cases.
+
+| unit after the gap | fast when | since |
+|---|---|---|
+| `~pN[m,d,i]` with deletions or insertions | pN has at least 4 x (m + d + i + 1) letters (index seeds); a shorter pN (up to 64 letters) uses a bit-parallel filter: faster than before, but slower than with seeds | 0.4.3 |
+| `~pN[m,0,0]` (mismatches only) | pN has at least 5 x (m + 1) letters (index seeds), or 5 exact letters follow it | 0.4.2 |
+| an exact word, exact `~pN`, exact `pN` | always | 0.2.0 |
+
+(0.4.3) TIRs with indels, `~p2[2,1,1]`, *B. napus* chromosomes A1-A3
+(100 Mb), `-t 40 -c --dedup --strict-n --format gff3`, same hits as
+0.4.2 (`tir_scan_patterns/indel/`; `--align` takes about the same time):
+
+| pattern | TIR letters | 0.4.2 | 0.4.3 |
+|---|---|---|---|
+| 10_DMM_Maverick_seed30 | 30 | 9.4 h | 280 s |
+| 03_DTM_G_seed20 | 19 | 15.2 h | 363 s |
+| 04_DTE_seed20 | 20 | 52 h | 1.8 h |
+| 03_DTM_unanchored_seed20 | 20 | 93 h | 2.7 h |
+
+(0.4.2) A TIR with mismatches, `TA p2=12...12 50...30000 ~p2[1,0,0] TA`,
+on the same 100 Mb: 1 026 s → 8 s, same output.  Exact dense patterns
+got about 2 % slower.
 
 (0.2.0) A range followed by an exact word, an exact reverse complement,
 a reverse complement with mismatches only (`~p1[1,0,0]`) or an exact

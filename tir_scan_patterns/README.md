@@ -313,7 +313,10 @@ download did not include program binaries, and no user genome was run.
   (0.1.0).
 - With `-c`, a symmetric pattern (all patterns here) reports each element
   on both strands; with `--format`, add `--dedup` to keep one copy (strand
-  `.`).
+  `.`).  Section 4 says `-c` is not needed; in this port use `-c --dedup`
+  anyway: the search goes on after the end of each hit, so the other
+  strand can find a few elements that overlap a forward hit (B. oleracea
+  chromosome C09, 00_DTC: 392 elements without `-c`, 396 with `-c --dedup`).
 - Example (one pattern, bgzip or plain FASTA, 8 threads):
 
   ```sh
@@ -373,3 +376,28 @@ same test, 1 mismatch raised the random share to 8-33 % (12-15 bp) or
 made the hits mostly random (5-8 bp).  Run an `mm2` file next to its
 exact file, or instead of it; with both in one run, `--merge` removes
 the elements found twice.
+
+## Versions with indels: `indel/` (new)
+
+A TIR can also lose or gain a letter.  The same 4 patterns have a copy
+in `indel/` (plain) and `indel/labelled/` that allows up to 2
+substitutions, 1 deletion and 1 insertion in the right TIR: `~p2`
+becomes `~p2[2,1,1]`.  The TSDs and the G/C anchors stay exact.  Run
+them with `--align` (else the matcher takes one alignment length and
+misses some elements; `--lint` says so).
+
+| file in `indel/` | real, mm2 | real, indel | real, indel `--align` | shuffled, indel `--align` | time, `--align` |
+|---|---|---|---|---|---|
+| `03_DTM_G_seed20_indel` | 1 285 | 1 679 | 1 764 | 8 | 6 min |
+| `03_DTM_unanchored_seed20_indel` | 2 565 | 5 768 | 6 192 | 174 | 2.7 h |
+| `04_DTE_seed20_indel` | 3 297 | 7 624 | 7 909 | 563 | 1.8 h |
+| `10_DMM_Maverick_seed30_indel` | 568 | 935 | 949 | 0 | 5 min |
+
+Same test as for `mm2/` (A1-A3, `-t 40`; elements).  Every mm2 element
+is also found.  The shuffled genome gives more random hits than with
+`mm2` (DTE: 563, about 7 % of the real count), so check the extra
+elements: in a family test (the 5' TIR has a near copy in another
+element) at least 13-41 % more elements than mm2 belong to a real
+family.  The indel versions are much slower than mm2 (minutes to hours
+on 100 Mb instead of seconds).  Plain and labelled files give the same
+hits.

@@ -1443,7 +1443,7 @@ usage:
   scan_for_matches [options] pattern_file < fasta_input > hits
   scan_for_matches [options] --input fasta_input --output hits pattern_file
   scan_for_matches --format F [options] pattern_file pattern_file ... < fasta_input
-  scan_for_matches --lint [-p] [-c] [--dedup] pattern_file ...
+  scan_for_matches --lint [-p] [-c] [--dedup] [--strict-n] [--align] pattern_file ...
   scan_for_matches --explain [-p] pattern_file ...
   scan_for_matches --merge [merge options] run1.gff3 run2.gff3 ... (--merge --help)
 
@@ -1502,7 +1502,7 @@ example:
   scan_for_matches -t 8 -c --dedup --strict-n --format gff3 --name-prefix DTC \\
       --input genome.fna.gz --output DTC.gff3 DTC.pat
 
-Pattern language and labels: see README.md.
+Pattern language: see PATTERNS.md; labels and output formats: see README.md.
 ";
 
 fn print_help() -> ! {

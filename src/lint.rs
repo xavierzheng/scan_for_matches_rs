@@ -1892,6 +1892,8 @@ mod tests {
             "tir_scan_patterns/labelled",
             "tir_scan_patterns/mm2",
             "tir_scan_patterns/mm2/labelled",
+            "tir_scan_patterns/indel",
+            "tir_scan_patterns/indel/labelled",
         ] {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(d);
             for e in std::fs::read_dir(dir).unwrap() {
@@ -1902,7 +1904,7 @@ mod tests {
             }
         }
         v.sort();
-        assert_eq!(v.len(), 52);
+        assert_eq!(v.len(), 60);
         v
     }
 
@@ -2357,7 +2359,12 @@ mod tests {
                 "{f}: {s}"
             );
             assert!(s.contains("reads the same on both strands"), "{f}: {s}");
-            assert!(!s.contains("slow"), "{f}: {s}");
+            // the 19-letter TIR with indels has no seeds (Myers filter only)
+            assert_eq!(
+                s.contains("slow"),
+                f.contains("03_DTM_G_seed20_indel"),
+                "{f}: {s}"
+            );
             let (s, _) = lint_o(&t, &opts(true));
             assert_eq!(count(&s, ": warning:"), 1, "{f}: {s}");
             assert!(s.contains("use --dedup with --format"), "{f}: {s}");

@@ -240,7 +240,10 @@ bed12、jsonl 用；標籤寫出元素、TSD 和 TIR 的名稱（見主 README �
 C 原版每條序列 250,000,000 nt 的上限已拿掉（0.1.0），不必再切段。
 
 -c：本套 pattern 兩條鏈的結構相同，加 -c 會讓每個元素在兩條鏈各找到
-一次；配合 --format 時加 --dedup，只留一份（strand 為 "."）。
+一次；配合 --format 時加 --dedup，只留一份（strand 為 "."）。前面說不
+需要 -c；在本 Rust 版仍建議用 -c --dedup：每找到一個 hit 後，搜尋從它
+的結尾繼續，所以另一條鏈可以找到少數跟正鏈 hit 重疊的元素（B. oleracea
+第 C09 條染色體，00_DTC：不加 -c 392 個，加 -c --dedup 396 個）。
 
 --strict-n（0.4.1）：沒有它時，TSD（p1）若從 assembly gap 抓到 N，
 另一端的 p1 會接受任何字母，所以 gap 旁會出現假的元素。加上它，抓到
@@ -292,3 +295,25 @@ TIR 較短（5-15 bp）的 pattern 不要加 mismatch：同一個測試中，1 �
 mismatch 讓隨機 hit 的比例升到 8-33 %（12-15 bp），或讓 hit 大多是隨機
 的（5-8 bp）。mm2 檔可以和 exact 檔一起跑，或取代它；一起跑時，用
 --merge 去掉被找到兩次的元素。
+
+九、容許 indel 的版本：indel/（新增）
+
+TIR 也可能少一個或多一個字母。同樣的 4 個 pattern 在 indel/（無標籤）
+和 indel/labelled/ 各有一份複本，右端 TIR 容許最多 2 個替換、1 個缺失
+和 1 個插入：~p2 改成 ~p2[2,1,1]。TSD 和 G/C 末端仍要完全相同。請加
+--align 跑（不加時 matcher 只取一種對齊長度，會漏掉一些元素；--lint
+會提醒）。
+
+indel/ 的檔案                    真實       真實      真實 indel   打亂 indel   時間
+                                 mm2        indel     --align      --align      --align
+03_DTM_G_seed20_indel            1 285      1 679     1 764          8          6 分
+03_DTM_unanchored_seed20_indel   2 565      5 768     6 192        174          2.7 小時
+04_DTE_seed20_indel              3 297      7 624     7 909        563          1.8 小時
+10_DMM_Maverick_seed30_indel       568        935       949          0          5 分
+
+測試跟 mm2/ 一樣（A1-A3，-t 40；數的是元素）。mm2 找到的元素也都會
+找到。打亂基因組的隨機 hit 比 mm2 多（DTE：563 個，約是真實數量的
+7 %），所以多出來的元素要檢查：用 family 測試（5' TIR 在另一個元素
+有很像的複本），至少比 mm2 多 13-41 % 的元素屬於真的 family。indel 版
+比 mm2 慢很多（100 Mb 要幾分鐘到幾小時，mm2 只要幾秒）。有標籤和沒標籤
+的檔案結果相同。

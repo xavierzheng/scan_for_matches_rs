@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `tir_scan_patterns/indel/`: copies of 03_DTM (both), 04_DTE and
+  10_DMM_Maverick with up to 2 substitutions, 1 deletion and 1 insertion
+  in the right TIR (`~p2[2,1,1]`), for use with `--align`.  A1-A3 of
+  B. napus: 37-141 % more elements than `mm2/`; 0-563 in the shuffled
+  genome.  The other files are not changed.
+
 ## 0.4.3 — 2026-10-15
 
 `--progress`, `--align`, and fast `~pN[m,d,i]` (a TIR with indels) after
