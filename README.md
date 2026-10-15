@@ -77,7 +77,12 @@ scan_for_matches --help      # all options
 
 Newest first:
 
-* **0.4.3** (this version) – `~pN[m,d,i]` (a TIR with deletions or
+* **0.4.4** (this version) – [`USER_GUIDE.md`](USER_GUIDE.md), a beginner
+  guide (also in Traditional Chinese, `USER_GUIDE_zh.md`);
+  `tir_scan_patterns/indel/`: DTM, DTE and Maverick patterns that allow
+  2 mismatches, 1 deletion and 1 insertion in the TIR (use `--align`);
+  the README lists every option.  The search does not change.
+* **0.4.3** – `~pN[m,d,i]` (a TIR with deletions or
   insertions) after a wide gap is fast (100 Mb: 9–93 h → 5 min–2.7 h;
   the same output); `--align`: such a TIR tries every alignment length,
   so fewer elements are missed (off by default: the hits then differ from
@@ -250,7 +255,7 @@ GFF3 of one hit (`>chr1:[21,80]`):
 
 ```
 ##gff-version 3
-# scan_for_matches 0.4.3 pattern=cacta.pat
+# scan_for_matches 0.4.4 pattern=cacta.pat
 ##sequence-region chr1 1 95
 chr1  scan_for_matches  repeat_region                         21  80  .  +  .  ID=DTC1;Name=DTC1;Classification=TIR/DTC;Method=structural;Sequence_ontology=SO:0000657
 chr1  scan_for_matches  target_site_duplication               21  23  .  +  .  ID=DTC1.lTSD;Parent=DTC1;Name=DTC1;...

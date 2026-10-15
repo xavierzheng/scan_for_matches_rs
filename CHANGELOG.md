@@ -1,13 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.4.4 — 2026-10-15
+
+Documentation and new pattern files; the search and its output do not
+change.
 
 ### Added
+- `USER_GUIDE.md`: a beginner guide: a first run in 1 minute, a whole
+  genome step by step (Slurm script, reading the GFF3, counting, BED,
+  JSONL, `--merge`), all options, speed tips and common problems.
+  `USER_GUIDE_zh.md`: the same in Traditional Chinese (Taiwan).
 - `tir_scan_patterns/indel/`: copies of 03_DTM (both), 04_DTE and
   10_DMM_Maverick with up to 2 substitutions, 1 deletion and 1 insertion
   in the right TIR (`~p2[2,1,1]`), for use with `--align`.  A1-A3 of
   B. napus: 37-141 % more elements than `mm2/`; 0-563 in the shuffled
   genome.  The other files are not changed.
+
+### Changed
+- README: the option table lists every option; Speed has the 0.4.2 and
+  0.4.3 numbers.
+- `--help`: the pattern language is in PATTERNS.md; the `--lint` line
+  shows `--strict-n` and `--align`.
+- `tir_scan_patterns/README.md` (and the Chinese one): use `-c --dedup`
+  with this port (a few more elements than without `-c`).
 
 ## 0.4.3 — 2026-10-15
 
