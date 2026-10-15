@@ -1,6 +1,6 @@
 # TIR candidate patterns for Scan for Matches (after Wicker et al. 2007)
 
-Traditional Chinese version: [README_zh-TW.txt](README_zh-TW.txt).
+Traditional Chinese version: [README_zh-TW.md](README_zh-TW.md).
 This file is an English translation of it (compiled 2026-09-30). The
 last two sections, "Use with this Rust port" and "Versions with
 mismatches", are new; the Chinese version has them as sections 7 and 8.

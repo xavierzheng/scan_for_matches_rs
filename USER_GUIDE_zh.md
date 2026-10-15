@@ -186,7 +186,7 @@ seq1	scan_for_matches	sequence_motif	3	24	.	+	.	ID=sfm1;Name=sfm1;Method=structu
 我們要找 CACTA 轉位子（DTC，一個 TIR 轉位子家族）。
 我們使用現成的 pattern `00_DTC_published_2025.pat`。
 全部 22 個現成 pattern 都在
-[`tir_scan_patterns/labelled/`](tir_scan_patterns/README.md)（中文說明：[README_zh-TW.txt](tir_scan_patterns/README_zh-TW.txt)）。
+[`tir_scan_patterns/labelled/`](tir_scan_patterns/README.md)（中文說明：[README_zh-TW.md](tir_scan_patterns/README_zh-TW.md)）。
 
 ### 4.1 看看這個 pattern
 
@@ -1061,4 +1061,4 @@ scan_for_matches: [0:05:58] 289 records (563.4 Mb) done, 440329 hits; finished
 **哪裡可以取得幫助。**
 `scan_for_matches --help`、[PATTERNS.md](PATTERNS.md)、[README.md](README.md)、
 [CHANGELOG.md](CHANGELOG.md)，以及
-[`tir_scan_patterns/`](tir_scan_patterns/README.md)（中文說明：[README_zh-TW.txt](tir_scan_patterns/README_zh-TW.txt)）中的 22 個現成 pattern。
+[`tir_scan_patterns/`](tir_scan_patterns/README.md)（中文說明：[README_zh-TW.md](tir_scan_patterns/README_zh-TW.md)）中的 22 個現成 pattern。
