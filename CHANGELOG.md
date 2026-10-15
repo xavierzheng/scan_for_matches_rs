@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 — 2026-10-15
+
+`--progress`, `--align`, and fast `~pN[m,d,i]` (a TIR with indels) after
+a wide gap; without `--align` the output does not change.
 
 ### Added
 - `--progress`: every minute a line on stderr with the records and Mb
