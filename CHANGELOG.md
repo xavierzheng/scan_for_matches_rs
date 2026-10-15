@@ -24,10 +24,11 @@
   i), checked by banded dynamic programming before the matcher runs.
   Needs pN of at least 4 x (m + d + i + 1) letters.  The output does
   not change.  `~p2[2,1,1]` on 100 Mb of B. napus (`-t 40`): Maverick
-  9.4 h → 280 s, DTM_G 15.2 h → 3.6 h.
+  9.4 h → 280 s, DTE 52 h → 1.8 h, DTM_unanchored 93 h → 2.7 h.
 - When pN is too short for those seeds (at most 64 letters), Myers'
   bit-parallel edit distance finds the places to check.  The output does
-  not change.  DTM_G `~p2[2,1,1]` (19 letters) on 3 Mb: 2 181 s → 64 s.
+  not change.  DTM_G `~p2[2,1,1]` (19 letters) on 100 Mb (`-t 40`):
+  3.6 h → 363 s.
 
 ### Changed
 - `--lint`: "slow" now also knows the seeds of `~pN[m,d,i]`; the greedy
