@@ -917,36 +917,44 @@ Several patterns in one run, Speed) and
   "Several patterns in one run"). About 11 min is the figure in the Quick start.
 * **Gap skipping.** A wide range followed by an exact word, for example
   `50...30000 ~p1`, skips the gap lengths that cannot work: up to 1000 times
-  faster on TIR patterns (README.md, Quick start). Keep the unit right after
-  a wide gap exact (see the next point).
+  faster on TIR patterns (README.md, Quick start). The unit right after
+  a wide gap must be one that the program can use for this (see the next point).
 * **The `slow` note.** `--lint` says `slow` when the unit right after a wide gap
   (`500...15000`) cannot be used to skip gap lengths. Then the program tries every gap
   length one by one. Fix it in this order:
-  1. Put an exact word or an exact `~pN` right after the gap.
-  2. If the unit after the gap needs mismatches, write them on `~pN[m,0,0]` and
-     make `pN` at least 5 x (m + 1) letters long (10 letters for 1 mismatch),
-     or put an exact word of 5 letters after it.
-  3. With deletions or insertions (`~pN[m,d,i]`), `pN` needs at least
+  1. Put a unit right after the gap that is always fast: an exact word, an
+     inexact word such as `TAGTG[1,0,0]`, a weight matrix `{(..),(..)} > N` (DNA only),
+     or an exact `~pN` or `pN`. You can also put a second range between them
+     (for example `500...15000 20...30 TAGTG p1`), if the unit after it does not read the first range.
+  2. If the unit after the gap needs mismatches, write them on `~pN[m,0,0]` or
+     `pN[m,0,0]` and make `pN` at least 4 x (m + 1) letters long (8 letters for
+     1 mismatch, 12 for 2), or put an exact word of 5 letters after it.
+  3. With deletions or insertions (`~pN[m,d,i]` or `pN[m,d,i]`), `pN` needs at least
      4 x (m + d + i + 1) letters (20 for `[2,1,1]`). Exact letters after it do not help.
   4. Or make the gap narrower.
 
-  (Numbers: README.md, 0.4.2 and 0.4.3 lines; PATTERNS.md, mistake 8.)
+  Still slow: a `pN` that is too short for rule 2 or 3, `<pN`, `length(...)`,
+  an alternative `( | )` after the gap, a unit after two ranges that reads the
+  first range (`p1=500...15000 20...30 p1`), protein mode (`-p`), and patterns
+  that use matches of earlier attempts. The hits do not change, only the speed.
+
+  (Numbers: README.md; PATTERNS.md, mistake 8.)
   Real output, a slow pattern and a fast one:
 
   ```
-  $ echo 'p1=3...3 CACTA p2=7...7 500...15000 TAGTG[1,0,0] ~p2 p1' > w9.pat
+  $ echo 'p1=3...3 CACTA p2=7...7 500...15000 ~p2[1,0,0] p1' > w9.pat
   $ scan_for_matches --lint --strict-n w9.pat
-  w9.pat:1: note: slow: each gap length of `500...15000` is tried (`TAGTG[1,0,0]` after it cannot be used to skip gap lengths)
+  w9.pat:1: note: slow: each gap length of `500...15000` is tried (`~p2[1,0,0]` has mismatches and too few letters to look up: give the name at least 4 letters per allowed mismatch + 4, or put 5 exact letters after it)
   0 errors, 0 warnings, 1 notes
-  $ echo 'p1=3...3 CACTA p2=7...7 500...15000 ~p2[1,0,0] TAGTG p1' > w12.pat
+  $ echo 'p1=3...3 CACTA p2=8...8 500...15000 ~p2[1,0,0] p1' > w12.pat
   $ scan_for_matches --lint --strict-n w12.pat
-  w12.pat: note: the pattern reads the same on both strands: with -c, every element is found twice; use --dedup with --format
-  0 errors, 0 warnings, 1 notes
+  0 errors, 0 warnings, 0 notes
   ```
 
-  The second pattern has the mismatch on `~p2[1,0,0]` and 5 exact letters (`TAGTG`)
-  after it, so there is no `slow` note. (Without `TAGTG`, `p2` of 7 letters is too short:
-  the note comes back.)
+  In the first pattern, `p2` has 7 letters. That is too short for 1 mismatch, and only
+  `p1` (3 letters) follows it, so the note appears. The second pattern has `p2` of 8 letters,
+  so there is no `slow` note. (Another fix: put 5 exact letters, for example `TAGTG`,
+  after `~p2[1,0,0]`.)
 * **`mm2/` and `indel/` patterns.** `tir_scan_patterns/mm2/` allow 2 mismatches
   in the right TIR. On about 100 Mb of *B. napus* (`-t 40`) they took 4 s,
   27 s, 23 s and 34 s (from 3 s, 14 s, 10 s and 4 s for the exact versions).

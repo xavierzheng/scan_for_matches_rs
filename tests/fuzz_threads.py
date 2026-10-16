@@ -5,6 +5,8 @@ usage: fuzz_threads.py BINARY [N_CASES] [SEED] [THREADS]
 
 FUZZ_STRICT_N=1: DNA cases also get --strict-n.
 FUZZ_ALIGN=1: every case also gets --align.
+FUZZ_PROGRESS=1: the second run is -t 1 --progress (long records are then
+searched in pieces too); its progress lines are left out of stderr.
 
 Random patterns (from fuzz_compare.py, normal and stress), FASTA with many
 records of very different lengths, random options (-c, -o, -m, -n, -i,
@@ -30,6 +32,7 @@ T = sys.argv[4] if len(sys.argv) > 4 else "4"
 FMT = os.environ.get("FUZZ_FORMAT") == "1"
 STRICT = os.environ.get("FUZZ_STRICT_N") == "1"
 ALIGN = os.environ.get("FUZZ_ALIGN") == "1"
+PROGRESS = os.environ.get("FUZZ_PROGRESS") == "1"
 
 
 def run(args, pat, inp, d, piece=None, warm=None):
@@ -75,7 +78,7 @@ def one(case):
         args += ["--format", r.choice(["gff3", "bed6", "bed12", "jsonl"])]
         if r.random() < 0.5:
             args.append("--dedup")
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         if r.random() < 0.2 and ids:
             with open(os.path.join(d, "ign"), "w") as f:
                 f.write("\n".join(r.sample(ids, r.randint(1, len(ids)))) + "\n")
@@ -84,9 +87,12 @@ def one(case):
         a = run(args, pat, inp, d)
         piece = r.choice([None, 1, 2, 3, 7, 30, 200, 1000])
         warm = r.choice([None, 0, 1, 2, 5, 17, 100, 1000])
-        b = run(["-t", T] + args, pat, inp, d, piece, warm)
+        b = run(["--progress"] + args if PROGRESS else ["-t", T] + args, pat, inp, d, piece, warm)
     if a is None or b is None:
         return ("timeout", None)
+    if PROGRESS:
+        err = b"".join(l for l in b[2].splitlines(True) if not l.startswith(b"scan_for_matches: ["))
+        b = (b[0], b[1], err)
     return ("ok" if a == b else "DIFF", (pat, args, fasta[:300], a[0], b[0]))
 
 

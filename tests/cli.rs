@@ -93,7 +93,12 @@ fn input_and_output_files_give_the_same_hits() {
     let fa = d.join("in.fa");
     std::fs::write(&fa, fasta()).unwrap();
     let p = pat.to_str().unwrap();
-    for extra in [&["-c"][..], &["-c", "-t", "3"], &["-c", "--format", "gff3"]] {
+    for extra in [
+        &["-c"][..],
+        &["-c", "-o", "1"],
+        &["-c", "-t", "3"],
+        &["-c", "--format", "gff3"],
+    ] {
         let mut a = extra.to_vec();
         a.push(p);
         let (code, want, _) = run(&a, &fasta());
@@ -143,13 +148,18 @@ fn progress_goes_to_stderr_only() {
     // every hit counts (no --dedup)
     let hits = plain.iter().filter(|&&b| b == b'>').count();
     assert!(hits > 0);
-    for extra in [&["-c"][..], &["-c", "-t", "3"], &["-c", "--format", "gff3"]] {
+    for extra in [
+        &["-c"][..],
+        &["-c", "-o", "1"],
+        &["-c", "-t", "3"],
+        &["-c", "--format", "gff3"],
+    ] {
         let mut a = extra.to_vec();
         a.push(p);
         let (_, want, _) = run(&a, &fasta());
         let mut b = vec!["--progress"];
         b.extend(&a);
-        // small pieces: the long-record path of -t is used too
+        // small pieces: long records are searched in pieces (also -t 1)
         let mut child = Command::new(BIN)
             .args(&b)
             .env("SFM_PIECE", "300")
@@ -169,7 +179,26 @@ fn progress_goes_to_stderr_only() {
             lines[0].ends_with("0 records (0.0 Mb) done, 0 hits; started"),
             "{err}"
         );
-        let fin = format!("20 records (0.0 Mb) done, {hits} hits; finished");
+        let n = if extra.contains(&"-o") {
+            want.iter().filter(|&&b| b == b'>').count()
+        } else {
+            hits
+        };
+        let fin = format!("20 records (0.0 Mb) done, {n} hits; finished");
         assert!(lines[1].ends_with(&fin), "{err} / {fin}");
+    }
+}
+
+#[test]
+fn option_error_shows_short_usage() {
+    // the C text showed `-o` without its value and a debug line
+    let want = "usage: scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i file] [-t N] pattern_file < fasta_input > hits\n\
+                scan_for_matches --help shows all options\n";
+    for args in [&["-z", "p"][..], &["-c"], &["-o"]] {
+        let (code, out, err) = run(args, b"");
+        assert_eq!(code, Some(2), "{args:?}");
+        assert!(out.is_empty());
+        assert!(err.ends_with(want), "{args:?}: {err}");
+        assert!(!err.contains("errflag"), "{args:?}: {err}");
     }
 }

@@ -475,7 +475,8 @@ fn print_hit<S: Sink>(
 
 /// Search one record (forward strand, then the reverse complement with
 /// `-c`) and print its hits while `max_hits` allows.  Returns whether a
-/// hit was printed.  This is the body of the C main loop.
+/// hit was printed.  This is the body of the C main loop.  `progress`:
+/// tell `Progress` how far the search is (the one-thread run only).
 #[allow(clippy::too_many_arguments)]
 fn scan_record<S: Sink>(
     eng: &mut Engine,
@@ -486,6 +487,7 @@ fn scan_record<S: Sink>(
     body: &[u8],
     opts: Opts,
     max_hits: &mut i32,
+    progress: bool,
 ) -> bool {
     // the persistent data buffer, NUL terminated
     data.store(body);
@@ -496,34 +498,86 @@ fn scan_record<S: Sink>(
         eng.copy_data(data);
     }
 
-    let mut hit_in_line = false;
-    let mut i = eng.first_match(ln as i32, hits);
-    while *max_hits > 0 && i > 0 {
-        hit_in_line = true;
-        if print_hit(pr, eng, id, false, ln, hits, i as usize, data) {
-            *max_hits -= 1;
-        }
-        i = if !opts.show_overlaps {
-            eng.cont_match(hits)
-        } else {
-            eng.next_match(hits)
-        };
-    }
-
-    if opts.complements {
+    // `-o` shows overlapping hits on the forward strand only
+    let mut hit_in_line = scan_strand(
+        eng,
+        data,
+        hits,
+        pr,
+        id,
+        false,
+        ln,
+        opts.show_overlaps,
+        max_hits,
+        progress,
+    );
+    if opts.complements && *max_hits > 0 {
         reverse_complement(data, ln);
         eng.comp_data(data);
-
-        let mut i = eng.first_match(ln as i32, hits);
-        while *max_hits > 0 && i > 0 {
-            hit_in_line = true;
-            if print_hit(pr, eng, id, true, ln, hits, i as usize, data) {
-                *max_hits -= 1;
-            }
-            i = eng.cont_match(hits);
-        }
+        hit_in_line |= scan_strand(eng, data, hits, pr, id, true, ln, false, max_hits, progress);
     }
     hit_in_line
+}
+
+/// Search one strand of a record (see `scan_record`).  With `progress`,
+/// a long record is searched in pieces (`first_match_in`, as with
+/// `-t N`) so that `Progress` sees the position; the hits are the same:
+/// each piece starts a new search, and without `overlaps` a hit that
+/// starts before the end of the last one is skipped, as `cont_match`
+/// does.
+#[allow(clippy::too_many_arguments)]
+fn scan_strand<S: Sink>(
+    eng: &mut Engine,
+    data: &Buf,
+    hits: &mut Vec<i64>,
+    pr: &mut Printer<S>,
+    id: &[u8],
+    rev: bool,
+    ln: usize,
+    overlaps: bool,
+    max_hits: &mut i32,
+    progress: bool,
+) -> bool {
+    let piece = piece_size();
+    let split = progress && ln >= 2 * piece && eng.can_split();
+    let mut hit = false;
+    let mut past = i64::MIN; // end of the last hit
+    let mut from = 0;
+    while from <= ln && *max_hits > 0 {
+        let (mut i, last) = if !split {
+            (eng.first_match(ln as i32, hits), ln)
+        } else {
+            // a hit of length 0 can start just past the end
+            let last = if from + piece >= ln {
+                ln
+            } else {
+                from + piece - 1
+            };
+            Progress::at(rev, from);
+            let mut i = eng.first_match_in(ln as i32, from as i64, last as i64, hits);
+            while !overlaps && i > 0 && hits[0] < past {
+                i = eng.next_match(hits);
+            }
+            (i, last)
+        };
+        while *max_hits > 0 && i > 0 {
+            hit = true;
+            if print_hit(pr, eng, id, rev, ln, hits, i as usize, data) {
+                *max_hits -= 1;
+                if progress {
+                    Progress::add_hit();
+                }
+            }
+            past = hits[i as usize];
+            i = if overlaps {
+                eng.next_match(hits)
+            } else {
+                eng.cont_match(hits)
+            };
+        }
+        from = last + 1;
+    }
+    hit
 }
 
 /// Count a record without hits for `-n`.
@@ -550,6 +604,8 @@ struct Progress {
     hits: std::sync::atomic::AtomicU64,
     /// the record searched now (empty between records)
     now: std::sync::Mutex<String>,
+    /// one thread: the strand and position in it (empty if not known)
+    at: std::sync::Mutex<String>,
 }
 
 static PROGRESS: std::sync::OnceLock<Progress> = std::sync::OnceLock::new();
@@ -571,6 +627,7 @@ impl Progress {
             bases: Default::default(),
             hits: Default::default(),
             now: Default::default(),
+            at: Default::default(),
         });
         p.print("started");
         std::thread::spawn(move || {
@@ -580,7 +637,8 @@ impl Progress {
                 if now.is_empty() {
                     p.print("running");
                 } else {
-                    p.print(&format!("now {now}"));
+                    let at = p.at.lock().unwrap().clone();
+                    p.print(&format!("now {now}{at}"));
                 }
             }
         });
@@ -604,6 +662,29 @@ impl Progress {
     fn now(what: impl FnOnce() -> String) {
         if let Some(p) = PROGRESS.get() {
             *p.now.lock().unwrap() = what();
+            p.at.lock().unwrap().clear();
+        }
+    }
+
+    /// One thread: the search of strand `rev` is at position `pos`.
+    fn at(rev: bool, pos: usize) {
+        if let Some(p) = PROGRESS.get() {
+            *p.at.lock().unwrap() =
+                format!(", strand {}, at {}", if rev { '-' } else { '+' }, mb(pos));
+        }
+    }
+
+    /// One thread: a hit was printed.
+    fn add_hit() {
+        if let Some(p) = PROGRESS.get() {
+            p.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// `-t N`: `hits` printed so far.
+    fn hits(hits: u64) {
+        if let Some(p) = PROGRESS.get() {
+            p.hits.store(hits, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -615,6 +696,7 @@ impl Progress {
             p.bases.fetch_add(ln as u64, Relaxed);
             p.hits.store(hits, Relaxed);
             p.now.lock().unwrap().clear();
+            p.at.lock().unwrap().clear();
         }
     }
 
@@ -686,6 +768,7 @@ fn run_sequential(
                         &body,
                         opts,
                         &mut max_hits,
+                        true,
                     );
                     // (a pattern that reads matches of earlier records
                     // keeps them)
@@ -1120,6 +1203,7 @@ fn run_threads(
                                     &w.rec.body,
                                     opts,
                                     &mut unlimited,
+                                    false,
                                 );
                                 if n_pats > 1 && w.rec.ln >= RELEASE_LEN {
                                     pe.release();
@@ -1243,6 +1327,7 @@ fn run_threads(
                 (job.end_of_record, job.rec.ln)
             }
         };
+        Progress::hits((all_hits - max_hits) as u64);
         if end_of_record {
             out.end_record();
             Progress::record_done(rec_ln, (all_hits - max_hits) as u64);
@@ -1515,11 +1600,13 @@ fn long_error(msg: &str) -> ! {
     std::process::exit(2);
 }
 
-fn usage(errflag: i32, optind: i32, argc: i32) -> ! {
-    eprintln!("errflag={} optind={} argc={}", errflag, optind, argc);
+/// The short usage text after an option error.  (The C text showed `-o`
+/// without its value, so `-o -c` took `-c` as the value.)
+fn usage() -> ! {
     eprintln!(
-        "usage: scan_for_matches -c [for complementary strand] -p [protein][-n stop_after_n_misses] [-m max_hits] [-i file_of_ids_to_ignore] -o [overlapping hits] [-t threads] pattern_file < fasta_input > hits"
+        "usage: scan_for_matches [-c] [-p] [-n N] [-m N] [-o N] [-i file] [-t N] pattern_file < fasta_input > hits"
     );
+    eprintln!("scan_for_matches --help shows all options");
     std::process::exit(2);
 }
 
@@ -1840,11 +1927,11 @@ fn real_main() {
 
     let optind = sys::optind_get();
     if errflag != 0 || optind >= argc {
-        usage(errflag, optind, argc);
+        usage();
     }
     if complements && protein {
         eprintln!("-c (complementary strand) cannot be used with -p (protein sequences)");
-        usage(errflag, optind, argc);
+        usage();
     }
     if strict_n && protein {
         long_error("--strict-n is for DNA; it cannot be used with -p");
@@ -1857,7 +1944,7 @@ fn real_main() {
             let name = args.get(i);
             match open_path(&name) {
                 Some(f) => (name, f),
-                None if optind as usize + 1 == argc as usize => usage(errflag, optind, argc),
+                None if optind as usize + 1 == argc as usize => usage(),
                 None => long_error(&format!(
                     "cannot open pattern file {}",
                     String::from_utf8_lossy(&name)

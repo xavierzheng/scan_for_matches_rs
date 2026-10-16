@@ -124,6 +124,36 @@ const KIDX_K: usize = 5;
 /// below this many candidate positions a plain scan is used
 const SCAN_LIMIT: i64 = 48;
 
+/// In `O_SKIP`: the unit is skipped by `next_start_other` (unit addresses
+/// are even).
+const SKIP_OTHER: i64 = 1;
+
+/// `next_start_other`: how often it skipped nothing.
+#[derive(Default)]
+struct OtherStats {
+    unit: i64,
+    calls: u32,
+    useless: u32,
+    /// calls left that return xlo at once
+    off: u32,
+    backoff: u32,
+}
+
+/// Starts per block of a `UnitBits` (filled one block at a time).
+const BITS_BLOCK: usize = 1024;
+
+/// For an inexact word or a weight unit after a range: the starts of the
+/// coded sequence where it matches, found once (`next_start_bits`).
+struct UnitBits {
+    unit: i64,
+    generation: u64,
+    er: i64,
+    /// bit p: the unit matches at `cd + p`
+    words: Vec<u64>,
+    /// bit b: block b of `words` is filled
+    done: Vec<u64>,
+}
+
 /// Positions of every k-mer of plain bases (A, C, G, T) in the coded
 /// sequence: `pos[starts[key]..starts[key + 1]]`, in increasing order.
 pub struct KIndex {
@@ -1029,6 +1059,9 @@ pub struct Engine {
     mask_bytes: [(usize, usize); 2],
     /// (range, units after its skip target that `next_start` checks too)
     skip_chains: Vec<(i64, Vec<i64>)>,
+    /// starts of inexact words and weight units (`next_start_bits`)
+    unit_bits: Vec<UnitBits>,
+    other_stats: Vec<OtherStats>,
     /// punit_to_code for indexes 0..127 (never overwritten)
     p2c_lo: [u8; 128],
     /// for each unit slot: byte offset in the pattern line where the unit
@@ -1099,6 +1132,8 @@ impl Engine {
             mask_del: 0,
             mask_bytes: [(0, 0); 2],
             skip_chains: Vec::new(),
+            unit_bits: Vec::new(),
+            other_stats: Vec::new(),
             p2c_lo: [0; 128],
             unit_offs: Vec::new(),
             track_units: false,
@@ -1327,6 +1362,7 @@ impl Engine {
         self.set_shared_seq(None);
         self.kidx = None;
         self.shared_kidx = None;
+        self.unit_bits.clear();
         self.cd_gen += 1;
         crate::sys::release_pages(self.own_cd, self.cd_hi.next_multiple_of(PAGE));
         self.cd_hi = 0;
@@ -2059,14 +2095,41 @@ impl Engine {
             match self.r32(pu + O_TYPE) {
                 RANGE_PUNIT => {
                     let n = Self::next_punit::<Checked>(m, pu);
-                    let target = if on && n != 0 && self.skippable(n, pu, true) {
+                    let target = if on
+                        && n != 0
+                        && (self.skippable(n, pu, true) || self.range_skippable(n, pu))
+                    {
                         n
                     } else {
                         0
                     };
-                    self.w64(pu + O_SKIP, target);
-                    // after `~pN[m,d,i]` with indels the next unit has no fixed place
-                    if target != 0 && !self.has_indels(target) {
+                    debug_assert!(target & SKIP_OTHER == 0);
+                    // the 0.4.3 units (exact, ~pN[m,0,0]) go straight to
+                    // next_start_far; the others through next_start_other
+                    let t = if target != 0 {
+                        self.r32(target + O_TYPE)
+                    } else {
+                        0
+                    };
+                    let tag = if target != 0
+                        && (matches!(t, SIM_PUNIT | WEIGHT_PUNIT | RANGE_PUNIT)
+                            || self.has_indels(target)
+                            || (t == REPEAT_PUNIT && self.r32(target + O_U8) != 0))
+                    {
+                        SKIP_OTHER
+                    } else {
+                        0
+                    };
+                    self.w64(pu + O_SKIP, if target != 0 { target | tag } else { 0 });
+                    // after `~pN[m,d,i]` with indels the next unit has no
+                    // fixed place; only units with masks have a chain
+                    if target != 0
+                        && matches!(
+                            self.r32(target + O_TYPE),
+                            EXACT_PUNIT | COMPL_PUNIT | REPEAT_PUNIT
+                        )
+                        && !self.has_indels(target)
+                    {
                         let chain = self.skip_chain(pu, target);
                         if !chain.is_empty() {
                             self.skip_chains.push((pu, chain));
@@ -2085,7 +2148,13 @@ impl Engine {
     }
 
     fn has_indels(&self, n: i64) -> bool {
-        self.r32(n + O_TYPE) == COMPL_PUNIT && (self.r32(n + O_U0) != 0 || self.r32(n + O_U4) != 0)
+        self.tolerant(n) && (self.r32(n + O_U0) != 0 || self.r32(n + O_U4) != 0)
+    }
+
+    /// `~pN[m,d,i]` or `pN[m,d,i]`: a captured text that `next_start` may
+    /// find with errors (masks[..mask_tol]).
+    fn tolerant(&self, n: i64) -> bool {
+        matches!(self.r32(n + O_TYPE), COMPL_PUNIT | REPEAT_PUNIT)
     }
 
     /// The units after `n` (the unit after the range `range`) that
@@ -2117,9 +2186,10 @@ impl Engine {
     /// Can lengths of the range `range` be skipped when `n` follows it?
     /// `n` must check a fixed string: not one taken from the range itself
     /// (its text changes with the gap length).
-    /// With `mismatches`, also a reverse complement with errors
-    /// (`~pN[m,d,i]`): `next_start` skips only starts where it cannot
-    /// match.  With deletions or insertions its length is not fixed, so no
+    /// With `mismatches`, also a reverse complement or a repeat with
+    /// errors (`~pN[m,d,i]`, `pN[m,d,i]`): `next_start` skips only starts
+    /// where it cannot match; and an inexact word or a weight unit, whose
+    /// starts are found once (`next_start_bits`).  With deletions or insertions its length is not fixed, so no
     /// units after it are checked with it (`skip_chain`).
     fn skippable(&self, n: i64, range: i64, mismatches: bool) -> bool {
         if self.r32(n + O_ANCH) == 0 {
@@ -2132,12 +2202,27 @@ impl Engine {
         let no_errors = |pu: i64| {
             self.r32(pu + O_U0) == 0 && self.r32(pu + O_U4) == 0 && self.r32(pu + O_U8) == 0
         };
+        // (a word with as many changes as letters matches everywhere)
+        let changes = |pu: i64| self.r32(pu + O_U0) + self.r32(pu + O_U4) + self.r32(pu + O_U8);
         match self.r32(n + O_TYPE) {
             EXACT_PUNIT => self.r32(n + O_U0) >= 1,
             COMPL_PUNIT => self.r32(n + O_U16) == -1 && (no_errors(n) || mismatches),
-            REPEAT_PUNIT => no_errors(n),
+            REPEAT_PUNIT => no_errors(n) || mismatches,
+            SIM_PUNIT => mismatches && self.r32(n + O_U12) > changes(n),
+            WEIGHT_PUNIT => mismatches && self.r32(n + O_U20) == 4,
             _ => false,
         }
+    }
+
+    /// A range `n` after the range `range`, followed by a unit that is
+    /// skippable for both (it reads neither range): the first range skips
+    /// to where the second can reach that unit (`next_start_range`).
+    fn range_skippable(&self, n: i64, range: i64) -> bool {
+        if self.r32(n + O_TYPE) != RANGE_PUNIT || self.r32(n + O_ANCH) == 0 {
+            return false;
+        }
+        let u = Self::next_punit::<Checked>(self.mem, n);
+        u != 0 && self.skippable(u, n, true) && self.skippable(u, range, true)
     }
 
     /// The masks the unit `n` checks at its position: data code `d` (low
@@ -2156,7 +2241,7 @@ impl Engine {
         self.mask_tol = 0;
         self.mask_ins = 0;
         self.mask_del = 0;
-        if self.r32(n + O_TYPE) == COMPL_PUNIT && (self.r32(n + O_U8) != 0 || self.has_indels(n)) {
+        if self.tolerant(n) && (self.r32(n + O_U8) != 0 || self.has_indels(n)) {
             self.mask_mis = self.r32(n + O_U8);
             self.mask_ins = self.r32(n + O_U0);
             self.mask_del = self.r32(n + O_U4);
@@ -2317,7 +2402,53 @@ impl Engine {
             // matcher try each length (most fail at the first base)
             return Some(xlo);
         }
+        if n & SKIP_OTHER != 0 {
+            return self.next_start_other(n & !SKIP_OTHER, range, xlo, xhi, er);
+        }
         self.next_start_far(n, range, xlo, xhi, er)
+    }
+
+    /// `next_start` for an inexact word, a weight unit, a second range, a
+    /// `pN[m,d,i]` or a `~pN` with indels.  When it skips almost nothing
+    /// (the unit matches nearly everywhere)
+    /// it only costs time: then it is off for a while (it returns xlo, as
+    /// with no skipping), and tried again later, off longer each time.
+    #[inline(never)]
+    fn next_start_other(&mut self, n: i64, range: i64, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
+        let k = match self.other_stats.iter().position(|s| s.unit == n) {
+            Some(k) => k,
+            None => {
+                self.other_stats.push(OtherStats {
+                    unit: n,
+                    ..Default::default()
+                });
+                self.other_stats.len() - 1
+            }
+        };
+        let s = &mut self.other_stats[k];
+        if s.off > 0 {
+            s.off -= 1;
+            return Some(xlo);
+        }
+        let r = match self.r32(n + O_TYPE) {
+            RANGE_PUNIT => self.next_start_range(n, xlo, xhi, er),
+            SIM_PUNIT | WEIGHT_PUNIT => self.next_start_bits(n, xlo, xhi, er),
+            _ => self.next_start_far(n, range, xlo, xhi, er),
+        };
+        let s = &mut self.other_stats[k];
+        s.calls += 1;
+        s.useless += (r == Some(xlo)) as u32;
+        if s.calls == 1024 {
+            if s.useless >= 896 {
+                s.off = 1024 << s.backoff;
+                s.backoff = (s.backoff + 1).min(10);
+            } else {
+                s.backoff = 0;
+            }
+            s.calls = 0;
+            s.useless = 0;
+        }
+        r
     }
 
     /// `next_start` for a window of at least 8 positions.
@@ -2393,12 +2524,127 @@ impl Engine {
         None
     }
 
+    /// `next_start_far` for a range `r2` after the range: the first start
+    /// x where r2 (lengths min..=max) can reach a start y of the unit
+    /// after it.  With y the first such start from xlo + min, no x below
+    /// y - max can reach one, and max(xlo, y - max) does.  Only the unit
+    /// itself is checked, not the units after it that r2 checks too
+    /// (`skip_chain`): they may read the first range, which is not
+    /// matched yet.
+    // not inlined: it would slow the hot loops of next_start_far
+    #[inline(never)]
+    fn next_start_range(&mut self, r2: i64, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
+        let u = self.r64(r2 + O_SKIP);
+        if u == 0 {
+            return Some(xlo);
+        }
+        let min = self.r32(r2 + O_U0) as i64;
+        // a reversed range takes only its first length
+        let max = min + (self.r32(r2 + O_U4) as i64).max(0);
+        let y = self.next_start(u, 0, xlo + min, xhi + max, er)?;
+        Some((y - max).max(xlo)).filter(|&x| x <= xhi)
+    }
+
+    /// Does the inexact word or weight unit `n` (after a range: it only
+    /// tries `x`) match at `x`?  The same test as `t_sim` / `t_weight`.
+    fn unit_at(&self, n: i64, x: i64, er: i64) -> bool {
+        if self.r32(n + O_TYPE) == SIM_PUNIT {
+            let (len, ins) = (self.r32(n + O_U12), self.r32(n + O_U0));
+            let last = (er + 1 + ins as i64 - len as i64).min(er + 1);
+            x <= last
+                && self.loose_match(
+                    One::Mem(self.r64(n + O_U16)),
+                    len,
+                    x,
+                    (er + 1 - x) as i32,
+                    ins,
+                    self.r32(n + O_U4),
+                    self.r32(n + O_U8),
+                    -1,
+                    false,
+                ) != 0
+        } else {
+            let wlen = self.r32(n + O_U0);
+            x <= er + 1 - wlen as i64 && {
+                let w = self.weight_score(self.r64(n + O_U8), self.r32(n + O_U20), wlen, x);
+                w > self.r32(n + O_U16) && w < self.r32(n + O_U24)
+            }
+        }
+    }
+
+    /// `next_start_far` for an inexact word or a weight unit: each start
+    /// is tested once per sequence (`unit_at`), in blocks of BITS_BLOCK
+    /// when the search first reaches them, and kept in `unit_bits`.
+    #[inline(never)]
+    fn next_start_bits(&mut self, n: i64, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
+        let base = self.mem.cd as i64;
+        // starts cd ..= er + 1 (a word with inserts can start past the end)
+        let len = (er + 2 - base).max(0) as usize;
+        let lo = (xlo - base).max(0) as usize;
+        let hi = ((xhi - base) as usize).min(len.saturating_sub(1));
+        if len == 0 || lo > hi {
+            return None;
+        }
+        let mut all = std::mem::take(&mut self.unit_bits);
+        let k = match all.iter().position(|b| b.unit == n) {
+            Some(k) => k,
+            None => {
+                all.push(UnitBits {
+                    unit: n,
+                    generation: 0,
+                    er: 0,
+                    words: Vec::new(),
+                    done: Vec::new(),
+                });
+                all.len() - 1
+            }
+        };
+        let b = &mut all[k];
+        if b.generation != self.cd_gen || b.er != er || b.words.len() != len.div_ceil(64) {
+            b.generation = self.cd_gen;
+            b.er = er;
+            b.words = vec![0; len.div_ceil(64)];
+            b.done = vec![0; len.div_ceil(BITS_BLOCK).div_ceil(64)];
+        }
+        let mut found = None;
+        let mut p = lo;
+        'blocks: while p <= hi {
+            let blk = p / BITS_BLOCK;
+            if b.done[blk / 64] >> (blk % 64) & 1 == 0 {
+                for q in blk * BITS_BLOCK..((blk + 1) * BITS_BLOCK).min(len) {
+                    if self.unit_at(n, base + q as i64, er) {
+                        b.words[q / 64] |= 1 << (q % 64);
+                    }
+                }
+                b.done[blk / 64] |= 1 << (blk % 64);
+            }
+            let end = ((blk + 1) * BITS_BLOCK).min(hi + 1);
+            while p < end {
+                let w = b.words[p / 64] >> (p % 64);
+                if w != 0 {
+                    let q = p + w.trailing_zeros() as usize;
+                    if q < end {
+                        found = Some(base + q as i64);
+                        break 'blocks;
+                    }
+                }
+                p = (p / 64 + 1) * 64;
+            }
+            p = end;
+        }
+        self.unit_bits = all;
+        found
+    }
+
     /// `next_start_far` without an index key after the tolerant part:
     /// seeds.  With at most mask_mis mismatches in masks[..mask_tol], one
     /// of mask_mis + 1 blocks of it matches exactly, so every start has
     /// the first KIDX_K masks of one block in place: the starts are taken
-    /// from the index lists of these keys, in increasing order.  None: no
-    /// seeds (a block shorter than KIDX_K, or not plain bases).
+    /// from the index lists of these keys, in increasing order.  A block
+    /// of KIDX_K - 1 letters is looked up as the KIDX_K-mers that end with
+    /// it, and at the start of each run of plain bases (as in
+    /// `next_start_indel`).  None: no seeds (a block shorter than
+    /// KIDX_K - 1, or not plain bases).
     #[inline(never)]
     fn next_start_seeds(&mut self, xlo: i64, xhi: i64, er: i64) -> Option<Option<i64>> {
         if self.mask_mis <= 0 {
@@ -2406,15 +2652,15 @@ impl Engine {
         }
         let parts = self.mask_mis as usize + 1;
         let bs = self.mask_tol / parts;
-        if bs < KIDX_K {
+        if bs + 1 < KIDX_K {
             return None;
         }
+        let kl = bs.min(KIDX_K);
         let seeds: Vec<usize> = (0..parts).map(|b| b * bs).collect();
-        if !seeds.iter().all(|&k| {
-            self.masks[k..k + KIDX_K]
-                .iter()
-                .all(|&mk| base2(mk).is_some())
-        }) {
+        if !seeds
+            .iter()
+            .all(|&k| self.masks[k..k + kl].iter().all(|&mk| base2(mk).is_some()))
+        {
             return None;
         }
         self.set_checks(self.mask_tol, None);
@@ -2431,19 +2677,27 @@ impl Engine {
             None => self.kidx.as_ref().unwrap(),
         };
         // for each seed: the positions where its key matches, from xlo on
-        // (the key of a start x is at x + ko)
-        let mut lists: Vec<(&[u32], i64)> = seeds
-            .iter()
-            .map(|&ko| {
-                let key = self.masks[ko..ko + KIDX_K]
-                    .iter()
-                    .fold(0u32, |key, &mk| key << 2 | base2(mk).unwrap());
-                let list = &idx.pos
-                    [idx.starts[key as usize] as usize..idx.starts[key as usize + 1] as usize];
-                let lo = (xlo - base + ko as i64) as u32;
-                (&list[list.partition_point(|&p| p < lo)..], base - ko as i64)
-            })
-            .collect();
+        // (a start x is off + p: the key of x is at x + ko)
+        let list = |key: u32| {
+            &idx.pos[idx.starts[key as usize] as usize..idx.starts[key as usize + 1] as usize]
+        };
+        let mut lists: Vec<(&[u32], i64)> = Vec::new();
+        for &ko in &seeds {
+            let key = self.masks[ko..ko + kl]
+                .iter()
+                .fold(0u32, |key, &mk| key << 2 | base2(mk).unwrap());
+            let found: Vec<(&[u32], i64)> = if kl == KIDX_K {
+                vec![(list(key), 0)]
+            } else {
+                let mut v: Vec<_> = (0..4u32).map(|c| (list(c << (2 * kl) | key), 1)).collect();
+                v.push((&idx.runs[..], 0));
+                v
+            };
+            for (l, to_block) in found {
+                let off = base + to_block - ko as i64;
+                lists.push((&l[l.partition_point(|&p| off + (p as i64) < xlo)..], off));
+            }
+        }
         loop {
             let Some(x) = lists
                 .iter()
@@ -2476,6 +2730,10 @@ impl Engine {
     fn next_start_indel(&mut self, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
         let (ins, del) = (self.mask_ins as i64, self.mask_del as i64);
         let parts = (self.mask_mis + self.mask_ins + self.mask_del) as usize + 1;
+        if parts > self.mask_tol {
+            // as many changes as letters: every start passes the filter
+            return Some(xlo);
+        }
         let bs = self.mask_tol / parts;
         let kl = bs.min(KIDX_K);
         let seeds = xhi - xlo >= SCAN_LIMIT
@@ -4274,83 +4532,7 @@ impl Engine {
         let cutoff = g32!(O_U16);
         let maxwt = g32!(O_U24);
         while sr <= last {
-            let mut wval: i32 = 0;
-            let mut p1 = sr;
-            let mut i = wlen;
-            if tupsz == 4 {
-                let mut pv = pv1;
-                while i != 0 {
-                    let c = m.rb(p1) & 15;
-                    p1 += 1;
-                    let aw = || m.r32(pv);
-                    let cw = || m.r32(pv + 4);
-                    let gw = || m.r32(pv + 8);
-                    let tw = || m.r32(pv + 12);
-                    let add = match c {
-                        0x1 => aw(),
-                        0x2 => cw(),
-                        0x4 => gw(),
-                        0x8 => tw(),
-                        0x3 => (aw() >> 1).wrapping_add(cw() >> 1),
-                        0x5 => (aw() >> 1).wrapping_add(gw() >> 1),
-                        0x9 => (aw() >> 1).wrapping_add(tw() >> 1),
-                        0x6 => (cw() >> 1).wrapping_add(gw() >> 1),
-                        0xA => (cw() >> 1).wrapping_add(tw() >> 1),
-                        0xC => (gw() >> 1).wrapping_add(tw() >> 1),
-                        0xE => (cw() / 3).wrapping_add(gw() / 3).wrapping_add(tw() / 3),
-                        0xD => (aw() / 3).wrapping_add(gw() / 3).wrapping_add(tw() / 3),
-                        0xB => (aw() / 3).wrapping_add(cw() / 3).wrapping_add(tw() / 3),
-                        0x7 => (aw() / 3).wrapping_add(cw() / 3).wrapping_add(gw() / 3),
-                        0xF => (aw() >> 2)
-                            .wrapping_add(cw() >> 2)
-                            .wrapping_add(gw() >> 2)
-                            .wrapping_add(tw() >> 2),
-                        _ => 0,
-                    };
-                    wval = wval.wrapping_add(add);
-                    i = i.wrapping_sub(1);
-                    pv += 16;
-                }
-            } else {
-                let mut pv = pv1;
-                while i != 0 {
-                    let k: i64 = match m.rb(p1) {
-                        b'A' => 0,
-                        b'C' => 1,
-                        b'D' => 2,
-                        b'E' => 3,
-                        b'F' => 4,
-                        b'G' => 5,
-                        b'H' => 6,
-                        b'I' => 7,
-                        b'K' => 8,
-                        b'L' => 9,
-                        b'M' => 10,
-                        b'N' => 11,
-                        b'P' => 12,
-                        b'Q' => 13,
-                        b'R' => 14,
-                        b'S' => 15,
-                        b'T' => 16,
-                        b'V' => 17,
-                        b'W' => 18,
-                        b'Y' => 19,
-                        _ => {
-                            if tupsz > 20 {
-                                20
-                            } else {
-                                -1
-                            }
-                        }
-                    };
-                    p1 += 1;
-                    if k >= 0 {
-                        wval = wval.wrapping_add(m.r32(pv + 4 * k));
-                    }
-                    i = i.wrapping_sub(1);
-                    pv += 4 * tupsz as i64;
-                }
-            }
+            let wval = self.weight_score(pv1, tupsz, wlen, sr);
             if wval > cutoff && wval < maxwt {
                 break;
             }
@@ -4368,6 +4550,92 @@ impl Engine {
             sr += g32!(O_U0) as i64;
             (sr, if pushed { 2 } else { 1 })
         }
+    }
+
+    /// The score of a weight unit (`pv1`: its weights, `tupsz` per
+    /// column, `wlen` columns) at `sr`: as the C code, with wrapping adds
+    /// and averaged weights for IUPAC codes.
+    #[inline(always)]
+    fn weight_score(&self, pv1: i64, tupsz: i32, wlen: i32, sr: i64) -> i32 {
+        let m = self.mem;
+        let mut wval: i32 = 0;
+        let mut p1 = sr;
+        let mut i = wlen;
+        if tupsz == 4 {
+            let mut pv = pv1;
+            while i != 0 {
+                let c = m.rb(p1) & 15;
+                p1 += 1;
+                let aw = || m.r32(pv);
+                let cw = || m.r32(pv + 4);
+                let gw = || m.r32(pv + 8);
+                let tw = || m.r32(pv + 12);
+                let add = match c {
+                    0x1 => aw(),
+                    0x2 => cw(),
+                    0x4 => gw(),
+                    0x8 => tw(),
+                    0x3 => (aw() >> 1).wrapping_add(cw() >> 1),
+                    0x5 => (aw() >> 1).wrapping_add(gw() >> 1),
+                    0x9 => (aw() >> 1).wrapping_add(tw() >> 1),
+                    0x6 => (cw() >> 1).wrapping_add(gw() >> 1),
+                    0xA => (cw() >> 1).wrapping_add(tw() >> 1),
+                    0xC => (gw() >> 1).wrapping_add(tw() >> 1),
+                    0xE => (cw() / 3).wrapping_add(gw() / 3).wrapping_add(tw() / 3),
+                    0xD => (aw() / 3).wrapping_add(gw() / 3).wrapping_add(tw() / 3),
+                    0xB => (aw() / 3).wrapping_add(cw() / 3).wrapping_add(tw() / 3),
+                    0x7 => (aw() / 3).wrapping_add(cw() / 3).wrapping_add(gw() / 3),
+                    0xF => (aw() >> 2)
+                        .wrapping_add(cw() >> 2)
+                        .wrapping_add(gw() >> 2)
+                        .wrapping_add(tw() >> 2),
+                    _ => 0,
+                };
+                wval = wval.wrapping_add(add);
+                i = i.wrapping_sub(1);
+                pv += 16;
+            }
+        } else {
+            let mut pv = pv1;
+            while i != 0 {
+                let k: i64 = match m.rb(p1) {
+                    b'A' => 0,
+                    b'C' => 1,
+                    b'D' => 2,
+                    b'E' => 3,
+                    b'F' => 4,
+                    b'G' => 5,
+                    b'H' => 6,
+                    b'I' => 7,
+                    b'K' => 8,
+                    b'L' => 9,
+                    b'M' => 10,
+                    b'N' => 11,
+                    b'P' => 12,
+                    b'Q' => 13,
+                    b'R' => 14,
+                    b'S' => 15,
+                    b'T' => 16,
+                    b'V' => 17,
+                    b'W' => 18,
+                    b'Y' => 19,
+                    _ => {
+                        if tupsz > 20 {
+                            20
+                        } else {
+                            -1
+                        }
+                    }
+                };
+                p1 += 1;
+                if k >= 0 {
+                    wval = wval.wrapping_add(m.r32(pv + 4 * k));
+                }
+                i = i.wrapping_sub(1);
+                pv += 4 * tupsz as i64;
+            }
+        }
+        wval
     }
 
     pub fn first_match(&mut self, len: i32, hits: &mut Vec<i64>) -> i32 {

@@ -77,7 +77,14 @@ scan_for_matches --help      # all options
 
 Newest first:
 
-* **0.4.4** (this version) – [`USER_GUIDE.md`](USER_GUIDE.md), a beginner
+* **0.4.5** (this version) – faster after a wide gap: an inexact word,
+  a weight matrix, `pN[m,d,i]` or a second range after it no longer
+  makes the search try every gap length (100 kb: 47-372 s → 0.02-0.5 s;
+  see Speed); `~pN[m,0,0]` is looked up from 4 x (m + 1) letters;
+  `--progress` with `-t 1` shows the position in a long record; the
+  short usage text after an option error is correct (`-o N`).  The hits
+  do not change.
+* **0.4.4** – [`USER_GUIDE.md`](USER_GUIDE.md), a beginner
   guide (also in Traditional Chinese, `USER_GUIDE_zh.md`);
   `tir_scan_patterns/indel/`: DTM, DTE and Maverick patterns that allow
   2 mismatches, 1 deletion and 1 insertion in the TIR (use `--align`);
@@ -148,7 +155,7 @@ scan_for_matches --merge [merge options] run1.gff3 run2.gff3 ... > all.gff3
 |---|---|
 | `-c` | also search the opposite strand (reverse complement); not with `-p` |
 | `-p` | protein sequences |
-| `-n N` | stop (exit status 1) after N sequences without a hit |
+| `-n N` | stop (exit status 1) after N sequences without a hit.  Not a hit limit: the original README says `-n 10` reports at most 10 hits, but the C program (and this one) uses `-m` for that |
 | `-m N` | report at most N hits |
 | `-o N` | show overlapping hits (the value is not used) |
 | `-i file` | file of sequence ids to skip |
@@ -157,7 +164,7 @@ scan_for_matches --merge [merge options] run1.gff3 run2.gff3 ... > all.gff3
 | `--output FILE` | write the hits to FILE instead of stdout (`-`: stdout) |
 | `--strict-n` | a letter that is not A, C, G, T and that a name caught (`N` of an assembly gap, `R`, `Y`, ...) is 1 mismatch when `p1` / `<p1` uses the name again; see [Assembly gaps](#assembly-gaps---strict-n) |
 | `--align` | `~p1[m,d,i]` with deletions or insertions tries every length it can align with (the original one first), so a hit is not lost when the unit after it needs another length.  Default: only the one greedy alignment of the original program |
-| `--progress` | every minute, write a line to stderr: records and Mb done, hits, and the record searched now (with `-t N` also the strand and the Mb reached in it).  stdout does not change; under Slurm the lines go to the `slurm-*.out` file |
+| `--progress` | every minute, write a line to stderr: records and Mb done, hits, and the record searched now, with the strand and the Mb reached in it (a record of at least 2 Mb, or one that is searched in pieces with `-t N`).  stdout does not change; under Slurm the lines go to the `slurm-*.out` file |
 | `-h`, `--help` | show the options and exit |
 | `--format F` | output `gff3`, `bed6`, `bed12` or `jsonl` instead of the original output; needed for several pattern files; see [Output formats](#output-formats---format) |
 | `--name-prefix P` | with `--format`: Name of each hit = P + number (default: the `Name=` of the `%@element` label, else `sfm`) |
@@ -255,7 +262,7 @@ GFF3 of one hit (`>chr1:[21,80]`):
 
 ```
 ##gff-version 3
-# scan_for_matches 0.4.4 pattern=cacta.pat
+# scan_for_matches 0.4.5 pattern=cacta.pat
 ##sequence-region chr1 1 95
 chr1  scan_for_matches  repeat_region                         21  80  .  +  .  ID=DTC1;Name=DTC1;Classification=TIR/DTC;Method=structural;Sequence_ontology=SO:0000657
 chr1  scan_for_matches  target_site_duplication               21  23  .  +  .  ID=DTC1.lTSD;Parent=DTC1;Name=DTC1;...
@@ -495,6 +502,10 @@ Only these (details in `CHANGELOG.md`):
   searched on one thread;
 * (0.2.0) gap lengths that cannot lead to a hit are skipped (see
   Speed); the output does not change.
+* (0.4.5) after an option error, the short usage text shows `-o N`
+  (the C text showed `-o` without its value) and points to `--help`;
+  the C debug line `errflag=... optind=... argc=...` is not printed.
+  The exit status is still 2.
 
 Unchanged on purpose (see `TODO.md`, group C): a pattern whose longest
 match is 0 characters is a pattern error, the value of `-o` is not used, a
@@ -538,6 +549,10 @@ cargo test --release
   accepts, with the same units (about 4 900 patterns, 4 000 of them
   random).
 * `tests/merge.rs` and unit tests in `src/merge.rs` – `--merge`.
+* `tests/skip_units.rs` – gap skipping before an inexact word, a weight
+  matrix, `pN[m,d,i]` and a second range: the same hits as without
+  skipping (`SFM_NO_SKIP=1`), also with `-t`.  `tests/fuzz_skip.py --slow`
+  checks many random cases of these.
 * `tools/test_jaspar2sfm.py` – `python3 -I -m unittest discover -s tools`.
 * `tests/fuzz_skip.py OLD NEW N SEED` – compares a build without gap
   skipping (for example 0.1.0) with a new one on random patterns with
@@ -562,7 +577,8 @@ clang, `cc -std=gnu89 -O2` (the original does not compile with the default
 flags of current compilers).  On Linux x86_64 (HPC, the C program built
 with gcc 9.5), version 0.4.0 gives the same result in 20 000 `--compat`
 cases.  `fuzz_skip.py` there uses version 0.1.0 (no gap skipping) built
-from its git tag as the old binary.
+from its git tag as the old binary; `--slow` compares one binary with and
+without skipping.
 
 ## Speed
 
@@ -576,9 +592,24 @@ What is fast after a wide gap (such as `50...30000`), newest first.
 
 | unit after the gap | fast when | since |
 |---|---|---|
+| an inexact word (`TAGTG[1,0,0]`), a weight matrix | always: each start of a sequence is tested once | 0.4.5 |
+| a second range (`20...30`), then a unit of this table | that unit is fast and does not read the first range | 0.4.5 |
+| `pN[m,d,i]` (a direct repeat with errors) | as `~pN[m,d,i]` below | 0.4.5 |
 | `~pN[m,d,i]` with deletions or insertions | pN has at least 4 x (m + d + i + 1) letters (index seeds); a shorter pN (up to 64 letters) uses a bit-parallel filter: faster than before, but slower than with seeds | 0.4.3 |
-| `~pN[m,0,0]` (mismatches only) | pN has at least 5 x (m + 1) letters (index seeds), or 5 exact letters follow it | 0.4.2 |
+| `~pN[m,0,0]` (mismatches only) | pN has at least 4 x (m + 1) letters (index seeds; 5 x (m + 1) before), or 5 exact letters follow it | 0.4.2 |
 | an exact word, exact `~pN`, exact `pN` | always | 0.2.0 |
+
+(0.4.5) A weak start before the gap, `p1=4...4 500...15000 X p1`, 100 kb
+of *B. napus* A1, one thread; the same hits:
+
+| X (after the gap) | 0.4.3 | now |
+|---|---|---|
+| `CACTACAAGAAA[1,0,0]` | 47 s | 0.05 s |
+| `CACTACAAGAAA[1,1,1]` | 372 s | 0.48 s |
+| an 8-column weight matrix | 115 s | 0.45 s |
+| `20...30 CACTACAAGAAA` (a second range) | 161 s | 0.02 s |
+| `p1=8...8 500...15000 p1[1,0,0]` (the whole pattern) | 46 s | 1.8 s |
+| `CACTACAAGAAA` (exact, for comparison) | 0.02 s | 0.02 s |
 
 (0.4.3) TIRs with indels, `~p2[2,1,1]`, *B. napus* chromosomes A1-A3
 (100 Mb), `-t 40 -c --dedup --strict-n --format gff3`, same hits as

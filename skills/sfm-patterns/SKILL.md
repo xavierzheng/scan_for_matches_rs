@@ -111,15 +111,21 @@ The TIR transposon, unit by unit:
 7. **One pattern per file.**  Lines of a file are joined with spaces.
 8. **Mismatches ≥ length match anything**: `ACG[3,0,0]`.
 9. **Speed after a wide gap** (a gap of a few hundred is fine either
-   way).  Fast: the gap is followed by an exact word, an exact `p1`, an
-   exact `~p1`, or `~p1[m,0,0]` (mismatches only) when `p1` has at least
-   5 x (m + 1) letters (10 for `[1,0,0]`) or 5 exact letters follow it
-   (`~p2[1,0,0] TAGTG`), or `~p1[m,d,i]` with deletions/insertions when
-   `p1` has at least 4 x (m + d + i + 1) letters (20 for `[2,1,1]`).
-   Slow: a word with errors (`TAGTG[1,0,0]`), `p1[1,0,0]`, a short
-   `~p2[m,d,i]`, or a short `~p2[m,0,0]` with few exact letters after it.  `--lint` says "slow"
-   for each of these.  So put the mismatches on the `~p2[m,0,0]` right
-   after the gap, and keep the words exact.
+   way).  Fast when the unit right after the gap is: an exact word; a
+   word with errors (`TAGTG[1,0,0]`); a weight matrix `{..} > N` (DNA);
+   an exact `p1` or `~p1`; `~p1[m,0,0]` or `p1[m,0,0]` (mismatches only)
+   when `p1` has at least 4 x (m + 1) letters (8 for `[1,0,0]`) or 5
+   exact letters follow it (`~p2[1,0,0] TAGTG`); `~p1[m,d,i]` or
+   `p1[m,d,i]` when `p1` has at least 4 x (m + d + i + 1) letters (20
+   for `[2,1,1]`; exact letters after it do not help).  A second range
+   may follow the gap: then the unit after it decides, if it does not
+   read the first range (`p1=3...3 500...15000 20...30 TAGTG p1` fast;
+   `p1=500...15000 20...30 p1` slow).
+   Slow: a too-short name with errors (`p2=7...7 500...15000
+   ~p2[1,0,0] p1`), `<p1`, `length(...)`, `( | )` after the gap, `-p`,
+   and patterns that use matches of earlier attempts.  `--lint` says
+   "slow" for each of these.  Hits are the same; only the time changes.
+   So give the name enough letters, or put 5 exact letters after it.
 10. **Hits do not overlap**: after a hit the search goes on after its end.
     `-o 1` shows overlapping hits (forward strand only; large output).
 11. **Branch order**: `( A | B )` searches branch A over the whole record

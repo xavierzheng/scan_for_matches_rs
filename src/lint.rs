@@ -823,39 +823,36 @@ impl<'a> Pat<'a> {
     }
 
     /// Can the engine skip gap lengths of `range` when `n` follows it?
+    /// (An inexact word or a weight unit: its starts are found once.)
     fn skippable(&self, n: &Unit, range: &Unit) -> bool {
         let own = |k: i32| self.named(k).is_some_and(|d| d.slot == range.slot);
         match &n.kind {
-            Kind::Word(_, e) => e.exact(),
-            Kind::Compl(None, k, _) => !own(*k),
-            Kind::Repeat(k, e) => !own(*k) && e.exact(),
+            Kind::Word(..) | Kind::Weight(..) => true,
+            Kind::Compl(None, k, _) | Kind::Repeat(k, _) => !own(*k),
             _ => false,
         }
     }
 
-    /// `n` (after a wide range) is not `~pK[m,d,i]`, or the engine finds
-    /// its gap lengths by index lookups: pK has at least 5 x (m + 1)
-    /// letters (seeds), or 5 exact plain letters follow (`rest`).  With
-    /// deletions or insertions: at least 4 x (m + d + i + 1) letters, and
-    /// `rest` does not help.  Only the first 29 letters are used for seeds.
-    /// Else every gap length is checked.
+    /// `n` (after a wide range) is not `~pK[m,d,i]` or `pK[m,d,i]`, or the
+    /// engine finds its gap lengths by index lookups: pK has at least
+    /// 4 x (m + 1) letters (seeds), or 5 exact plain letters follow
+    /// (`rest`).  With deletions or insertions: at least 4 x (m + d + i + 1)
+    /// letters, and `rest` does not help.  Only the first 29 letters are
+    /// used for seeds.  Else every gap length is checked.
     fn looked_up(&self, n: &Unit, rest: &[Unit]) -> bool {
-        let Kind::Compl(None, k, e) = &n.kind else {
+        let (Kind::Compl(None, k, e) | Kind::Repeat(k, e)) = &n.kind else {
             return true;
         };
         if e.mis == 0 && e.ins == 0 && e.del == 0 {
             return true;
         }
         let len = |k: i32| self.named(k).map(|d| self.len_range(d, 0));
-        let (per, parts) = if e.ins == 0 && e.del == 0 {
-            (5, e.mis as i64 + 1)
-        } else {
-            (4, (e.mis + e.ins + e.del) as i64 + 1)
-        };
-        if len(*k).is_some_and(|(lo, _)| lo.min(29) >= per * parts) {
+        let indels = e.ins != 0 || e.del != 0;
+        let parts = (e.mis + e.ins + e.del) as i64 + 1;
+        if len(*k).is_some_and(|(lo, _)| lo.min(29) >= 4 * parts) {
             return true;
         }
-        if per == 4 {
+        if indels {
             return false;
         }
         let mut run = 0;
@@ -889,6 +886,17 @@ impl<'a> Pat<'a> {
         false
     }
 
+    /// `range` followed by the range `n` and then `u`: the engine skips
+    /// lengths of `range` by `u` when `u` reads neither range.
+    fn range_looked_up(&self, range: &Unit, n: &Unit, u: Option<&Unit>, rest: &[Unit]) -> bool {
+        matches!(n.kind, Kind::Range(..))
+            && u.is_some_and(|u| {
+                self.skippable(u, range)
+                    && self.skippable(u, n)
+                    && self.looked_up(u, rest.get(1..).unwrap_or(&[]))
+            })
+    }
+
     /// Wide ranges (> 1000 lengths) whose gap lengths are tried one by
     /// one, with the unit after them.
     fn slow(&self, units: &'a [Unit], after: Option<&'a Unit>, skip: bool, out: &mut Early2<'a>) {
@@ -903,6 +911,7 @@ impl<'a> Pat<'a> {
                     };
                     if let Some(n) = next
                         && !(skip && self.skippable(n, u) && self.looked_up(n, rest))
+                        && !(skip && self.range_looked_up(u, n, units.get(i + 2), rest))
                     {
                         out.push((u, n));
                     }
@@ -1338,7 +1347,7 @@ impl Checker<'_, '_> {
         let mut slow = Vec::new();
         pat.slow(&pat.ps.units, None, skip, &mut slow);
         for (r, n) in slow {
-            let indels = matches!(&n.kind, Kind::Compl(_, _, e) if e.ins > 0 || e.del > 0);
+            let indels = matches!(&n.kind, Kind::Compl(_, _, e) | Kind::Repeat(_, e) if e.ins > 0 || e.del > 0);
             let why = if skip && pat.skippable(n, r) && indels {
                 format!(
                     "`{}` has too few letters to look up: give the name at least \
@@ -1348,7 +1357,7 @@ impl Checker<'_, '_> {
             } else if skip && pat.skippable(n, r) {
                 format!(
                     "`{}` has mismatches and too few letters to look up: give the name \
-                     at least 5 letters per allowed mismatch + 5, or put 5 exact letters after it",
+                     at least 4 letters per allowed mismatch + 4, or put 5 exact letters after it",
                     pat.text(n)
                 )
             } else if skip {
@@ -2485,21 +2494,35 @@ mod tests {
     #[test]
     fn notes() {
         fires(
-            "p1=10...10 50...30000 p1[1,0,0]",
+            "p1=7...7 50...30000 p1[1,0,0]",
             "note",
             "slow: each gap length of `50...30000`",
         );
-        fires("50...30000 AC[1,0,0]", "note", "slow");
+        // pN[m,d,i] as ~pN[m,d,i]; inexact words, weights: found once
+        for p in [
+            "p1=8...8 50...30000 p1[1,0,0]",
+            "p1=12...12 50...30000 p1[1,1,0]",
+            "50...30000 AC[1,0,0]",
+            "50...30000 ACGTACGT[1,1,1]",
+            "50...30000 {(1,2,3,4),(5,6,7,8)} > 6",
+            "p1=3...3 50...30000 20...30 ACGTA p1",
+            "p1=3...3 50...30000 20...30 TAGTG[1,0,0] p1",
+        ] {
+            assert!(!lint_s(p).contains("slow"), "{p}");
+        }
+        // the unit after two ranges reads the first one
+        fires("p1=50...30000 20...30 p1", "note", "slow");
         fires("r1={au} p1=5...5 50...30000 r1~p1", "note", "slow");
         fires("p1=5...5 50...30000 ~p1[0,1,0]", "note", "slow");
-        // ~pN[m,0,0]: index seeds need 5 x (m + 1) letters, or 5 exact after
+        // ~pN[m,0,0]: index seeds need 4 x (m + 1) letters, or 5 exact after
         fires(
-            "TA p2=8...8 50...30000 ~p2[1,0,0] TA",
+            "TA p2=7...7 50...30000 ~p2[1,0,0] TA",
             "note",
             "too few letters to look up",
         );
-        fires("p2=12...12 50...30000 ~p2[2,0,0] ACG", "note", "slow");
-        fires("p2=8...12 50...30000 ~p2[1,0,0]", "note", "slow");
+        fires("p2=11...11 50...30000 ~p2[2,0,0] ACG", "note", "slow");
+        fires("p2=7...12 50...30000 ~p2[1,0,0]", "note", "slow");
+        assert!(!lint_s("p2=8...8 50...30000 ~p2[1,0,0]").contains("slow"));
         // ~pN[m,d,i] with indels: 4 x (m + d + i + 1) letters
         fires(
             "p2=12...12 50...30000 ~p2[2,1,1]",

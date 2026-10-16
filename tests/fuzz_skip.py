@@ -3,7 +3,7 @@
 skipping, for example 0.1.0, and one with it) on patterns with wide ranges
 followed by exact words, exact reverse complements and exact repeats.
 
-usage: fuzz_skip.py [--chain | --tir] OLD_BINARY NEW_BINARY [N_CASES] [SEED]
+usage: fuzz_skip.py [--chain | --tir | --slow] OLD_BINARY NEW_BINARY [N_CASES] [SEED]
 
 --chain: every pattern has a range followed by several units that check
 fixed strings (words, named words, ~pN and pN, also of names in the chain
@@ -15,6 +15,13 @@ after it), so gap lengths are found by index seeds of the tolerant part;
 also with deletions and insertions (`~p2[2,1,1]`), planted TIRs with
 indels.  FUZZ_ALIGN=1: both runs get `--align`, and OLD runs with
 SFM_NO_SKIP=1 (no skipping; give the same binary twice).
+
+--slow: a wide range followed by a unit that older versions did not skip
+(OLD runs with SFM_NO_SKIP=1; give the same binary twice).
+SLOW_KINDS picks them (default "ABCD"): A `pN[m,d,i]` (a direct repeat
+with errors), B an inexact word `w[m,d,i]`, C a weight matrix, D a
+second range before a skippable unit.  Planted repeats, near words and
+matrix consensus; N and IUPAC codes in the data; -c, -o, --strict-n.
 """
 import os
 import random
@@ -25,8 +32,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 CHAIN = "--chain" in sys.argv
 TIR = "--tir" in sys.argv
+SLOW = "--slow" in sys.argv
+KINDS = os.environ.get("SLOW_KINDS", "ABCD")
 ALIGN = os.environ.get("FUZZ_ALIGN") == "1"
-ARGS = [a for a in sys.argv[1:] if a not in ("--chain", "--tir")]
+ARGS = [a for a in sys.argv[1:] if a not in ("--chain", "--tir", "--slow")]
 OLD, NEW = os.path.abspath(ARGS[0]), os.path.abspath(ARGS[1])
 N = int(ARGS[2]) if len(ARGS) > 2 else 1000
 SEED = int(ARGS[3]) if len(ARGS) > 3 else 1
@@ -155,6 +164,89 @@ def tir_pattern(r):
     return " ".join(units)
 
 
+def rnd_word(r, n, iupac=0.1):
+    return "".join(r.choice("acgt" if r.random() >= iupac else "acgtnrykmswbdhv") for _ in range(n))
+
+
+def mutate(r, w, k):
+    w = list(w)
+    for _ in range(k):
+        j = r.randrange(len(w) + 1)
+        x = r.random()
+        if x < 0.5 and j < len(w):
+            w[j] = r.choice("acgtn")
+        elif x < 0.75 and j < len(w) and len(w) > 1:
+            del w[j]
+        else:
+            w.insert(j, r.choice("acgt"))
+    return "".join(w)
+
+
+def weight_unit(r):
+    cols = r.randint(1, 12)
+    rows = [[r.randint(-20, 100) for _ in range(4)] for _ in range(cols)]
+    best = sum(max(x) for x in rows)
+    cut = r.randint(-50, max(-49, best))
+    mat = "{" + ",".join("(%s)" % ",".join(map(str, x)) for x in rows) + "}"
+    cons = "".join("acgt"[x.index(max(x))] for x in rows)
+    if r.random() < 0.2:
+        return "%d > %s > %d" % (cut + r.randint(1, 200), mat, cut), cons
+    return "%s > %d" % (mat, cut), cons
+
+
+# words planted in the data for the --slow patterns
+PLANT = []
+
+
+def slow_pattern(r):
+    """A wide range, then the unit that has to be found (SLOW_KINDS)."""
+    del PLANT[:]
+    units = []
+    tsd = r.random() < 0.5
+    if tsd:
+        a = r.randint(1, 6)
+        units.append("p1=%d...%d" % (a, a + r.choice([0, 0, 1])))
+    if r.random() < 0.3:
+        units.append(rnd_word(r, r.randint(1, 4), 0))
+    k = r.randint(2, 24)
+    units.append("p2=%d...%d" % (k, k + r.choice([0, 0, 1, 3])))
+    a = r.randint(0, 40)
+    kind = r.choice(KINDS)
+    # D: the first range named, and read after the unit (not skippable
+    # from the first range)
+    r1 = kind == "D" and r.random() < 0.5
+    units.append(("p4=" if r1 else "") + "%d...%d" % (a, a + r.choice([10, 60, 300, 2000, 6000])))
+    if kind == "D":
+        c = r.randint(0, 20)
+        units.append("%d...%d" % (c, c + r.choice([0, 1, 5, 30, 300, 2000])))
+        kind = r.choice([x for x in KINDS if x != "D"] + ["E", "E"])
+    if kind == "A":
+        m, d, i = r.choice([(1, 0, 0), (2, 0, 0), (3, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1), (2, 1, 1), (1, 2, 0)])
+        units.append("p2[%d,%d,%d]" % (m, d, i))
+    elif kind == "B":
+        w = rnd_word(r, r.randint(1, 20))
+        m, d, i = r.choice([(1, 0, 0), (2, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1), (2, 1, 1), (0, 0, 3), (3, 0, 0)])
+        units.append("%s%s[%d,%d,%d]" % ("p3=" if r.random() < 0.2 else "", w, m, d, i))
+        PLANT.append((w, m + d + i))
+    elif kind == "C":
+        u, cons = weight_unit(r)
+        units.append(u)
+        PLANT.append((cons, 0))
+    else:
+        # E: a unit that was skippable already (for D)
+        units.append(r.choice(["~p2", "p2", "~p2[1,0,0]", rnd_word(r, r.randint(1, 8), 0)]))
+    if r.random() < 0.3:
+        units.append(r.choice(["ta", "gtg", "c", "acgt", "~p2", "0...3"]))
+    if r1:
+        units.append(r.choice(["~p4", "p4", "c ~p4", "~p4[1,0,0]"]))
+    if tsd:
+        units.append(r.choice(["p1", "p1", "p1[1,0,0]"]))
+    if r.random() < 0.1:
+        units.insert(0, "(" + " ".join(units) + " | tt)")
+        del units[1:]
+    return " ".join(units)
+
+
 def sequence(r, n):
     s = [r.choice("acgt") for _ in range(n)]
     # planted hairpins and repeats
@@ -182,6 +274,17 @@ def sequence(r, n):
                 else:
                     end.insert(k, r.choice("acgt"))
         s[i:i] = list(tsd + tir + mid + "".join(end) + tsd)
+    # --slow: planted direct repeats and near copies of the word
+    for _ in range(r.randint(0, 6) if SLOW else 0):
+        rep = "".join(r.choice("acgt") for _ in range(r.randint(2, 26)))
+        mid = "".join(r.choice("acgt") for _ in range(r.randint(0, 3000)))
+        i = r.randint(0, max(0, len(s) - 1))
+        s[i:i] = list(rep + mid + mutate(r, rep, r.choice([0, 1, 2])))
+    for w, e in PLANT if SLOW else []:
+        for _ in range(r.randint(0, 8)):
+            i = r.randint(0, max(0, len(s) - 1))
+            w2 = "".join(c if c in "acgt" else r.choice("acgt") for c in w)
+            s[i:i] = list(mutate(r, w2, r.randint(0, e + 1)))
     if r.random() < 0.2:
         for _ in range(r.randint(1, 10)):
             s[r.randrange(len(s))] = r.choice("nNryRY")
@@ -197,7 +300,7 @@ WORKERS = 4
 def run(b, args, pat, inp, env=None):
     import hashlib
     import threading
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         pp = os.path.join(d, "pat")
         with open(pp, "w") as f:
             f.write(pat + "\n")
@@ -235,13 +338,15 @@ def run(b, args, pat, inp, env=None):
 
 def one(case):
     r = random.Random(SEED * 1000003 + case)
-    pat = chain_pattern(r) if CHAIN else tir_pattern(r) if TIR else pattern(r)
-    sizes = [300, 2000, 6000, 20000] if TIR else [50, 300, 2000, 6000]
+    pat = chain_pattern(r) if CHAIN else tir_pattern(r) if TIR else slow_pattern(r) if SLOW else pattern(r)
+    sizes = [300, 2000, 6000, 20000] if TIR or SLOW else [50, 300, 2000, 6000]
     recs = "".join(">r%d\n%s\n" % (k, sequence(r, r.choice(sizes))) for k in range(r.randint(1, 3)))
     args = (["-c"] if r.random() < 0.4 else []) + (["-o", "1"] if r.random() < 0.3 else [])
     if ALIGN:
         args = ["--align"] + args
-    a = run(OLD, args, pat, recs.encode(), {"SFM_NO_SKIP": "1"} if ALIGN else None)
+    if SLOW and r.random() < 0.3:
+        args = ["--strict-n"] + args
+    a = run(OLD, args, pat, recs.encode(), {"SFM_NO_SKIP": "1"} if ALIGN or SLOW else None)
     b = run(NEW, args, pat, recs.encode())
     if b is None and a is not None and a != "big":
         return ("NEW-timeout", (pat, args, len(recs)))

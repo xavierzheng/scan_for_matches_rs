@@ -301,7 +301,7 @@ DTC 中間區段上下界的測試，並確認 `-o 1` 可列出正向的三個�
   的每個非 A、C、G、T 字母算 1 個 mismatch；本套 TSD 不容許 mismatch，
   所以這種 hit 會被丟掉。有 gap 的基因組都應該加。
 - **`--progress`（0.4.3）**：每分鐘在 stderr 寫一行進度（做完幾條序列、幾 Mb、
-  幾個 hit、現在在找哪一條；用 `-t N` 時還有哪一股、找到第幾 Mb）。結果
+  幾個 hit、現在在找哪一條、哪一股、找到第幾 Mb）。結果
   （stdout 或 `--output`）不變。在 Slurm 下這些行會出現在 `slurm-*.out`。
 
 範例（一個 pattern，bgzip 或一般 FASTA，8 個執行緒）：

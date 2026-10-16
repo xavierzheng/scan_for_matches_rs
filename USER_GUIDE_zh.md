@@ -915,36 +915,43 @@ Several patterns in one run、Speed 這幾節）和
   「Several patterns in one run」）。Quick start 中的數字約為 11 分鐘。
 * **間隔跳躍。** 一個寬範圍後面接一個完全相符的字詞，例如
   `50...30000 ~p1`，會跳過不可能成立的間隔長度：在 TIR pattern 上最多
-  快 1000 倍（README.md，Quick start）。讓緊接在寬間隔後面的單元
-  保持完全相符（見下一點）。
+  快 1000 倍（README.md，Quick start）。緊接在寬間隔後面的單元
+  必須是程式能用來跳躍的單元（見下一點）。
 * **`slow` 提示。** 當緊接在寬間隔（`500...15000`）後面的單元
   無法用來跳過間隔長度時，`--lint` 會說 `slow`。這時程式會逐一嘗試
   每個間隔長度。依下列順序修正：
-  1. 在間隔後面緊接一個完全相符的字詞，或一個完全相符的 `~pN`。
-  2. 如果間隔後面的單元需要錯配，把錯配寫在 `~pN[m,0,0]` 上，並且
-     讓 `pN` 至少有 5 x (m + 1) 個字母長（1 個錯配就是 10 個字母），
-     或在它後面放一個 5 個字母、完全相符的字詞。
-  3. 有缺失或插入時（`~pN[m,d,i]`），`pN` 至少需要
+  1. 在間隔後面緊接一個一定很快的單元：完全相符的字詞、
+     不完全相符的字詞（例如 `TAGTG[1,0,0]`）、權重矩陣 `{(..),(..)} > N`（只限 DNA），
+     或完全相符的 `~pN` 或 `pN`。中間也可以放第二個範圍
+     （例如 `500...15000 20...30 TAGTG p1`），只要它後面的單元不讀取第一個範圍。
+  2. 如果間隔後面的單元需要錯配，把錯配寫在 `~pN[m,0,0]` 或
+     `pN[m,0,0]` 上，並且讓 `pN` 至少有 4 x (m + 1) 個字母長（1 個錯配是 8 個字母，
+     2 個錯配是 12 個），或在它後面放一個 5 個字母、完全相符的字詞。
+  3. 有缺失或插入時（`~pN[m,d,i]` 或 `pN[m,d,i]`），`pN` 至少需要
      4 x (m + d + i + 1) 個字母（`[2,1,1]` 需要 20 個）。後面接完全相符的字母沒有幫助。
   4. 或把間隔縮窄。
 
-  （數字來源：README.md，0.4.2 與 0.4.3 的條目；PATTERNS.md，mistake 8。）
+  仍然很慢的情況：`pN` 對規則 2 或 3 來說太短、`<pN`、`length(...)`、
+  間隔後面接替代選項 `( | )`、兩個範圍之後的單元讀取第一個範圍
+  （`p1=500...15000 20...30 p1`）、蛋白質模式（`-p`），以及使用先前嘗試的比對結果的 pattern。
+  hit 不會改變，只有速度不同。
+
+  （數字來源：README.md；PATTERNS.md，mistake 8。）
   真實輸出，一個慢的 pattern 和一個快的 pattern：
 
   ```
-  $ echo 'p1=3...3 CACTA p2=7...7 500...15000 TAGTG[1,0,0] ~p2 p1' > w9.pat
+  $ echo 'p1=3...3 CACTA p2=7...7 500...15000 ~p2[1,0,0] p1' > w9.pat
   $ scan_for_matches --lint --strict-n w9.pat
-  w9.pat:1: note: slow: each gap length of `500...15000` is tried (`TAGTG[1,0,0]` after it cannot be used to skip gap lengths)
+  w9.pat:1: note: slow: each gap length of `500...15000` is tried (`~p2[1,0,0]` has mismatches and too few letters to look up: give the name at least 4 letters per allowed mismatch + 4, or put 5 exact letters after it)
   0 errors, 0 warnings, 1 notes
-  $ echo 'p1=3...3 CACTA p2=7...7 500...15000 ~p2[1,0,0] TAGTG p1' > w12.pat
+  $ echo 'p1=3...3 CACTA p2=8...8 500...15000 ~p2[1,0,0] p1' > w12.pat
   $ scan_for_matches --lint --strict-n w12.pat
-  w12.pat: note: the pattern reads the same on both strands: with -c, every element is found twice; use --dedup with --format
-  0 errors, 0 warnings, 1 notes
+  0 errors, 0 warnings, 0 notes
   ```
 
-  第二個 pattern 把錯配放在 `~p2[1,0,0]` 上，後面接 5 個完全相符的字母（`TAGTG`），
-  所以沒有 `slow` 提示。（如果沒有 `TAGTG`，7 個字母的 `p2` 就太短：
-  提示會再出現。）
+  第一個 pattern 的 `p2` 只有 7 個字母。對 1 個錯配來說太短，而且它後面只有
+  `p1`（3 個字母），所以會出現提示。第二個 pattern 的 `p2` 有 8 個字母，
+  所以沒有 `slow` 提示。（另一種修正：在 `~p2[1,0,0]` 後面放 5 個完全相符的字母，例如 `TAGTG`。）
 * **`mm2/` 和 `indel/` pattern。** `tir_scan_patterns/mm2/` 允許右側 TIR 有 2 個錯配。
   在大約 100 Mb 的 *B. napus* 上（`-t 40`），它們花了 4 s、
   27 s、23 s 和 34 s（完全相符的版本是 3 s、14 s、10 s 和 4 s）。

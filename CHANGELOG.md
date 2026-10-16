@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.4.5 — 2026-10-16
+
+### Faster
+- A wide gap (such as `500...15000`) followed by an inexact word
+  (`TAGTG[1,0,0]`), a weight matrix, a direct repeat with errors
+  (`pN[m,d,i]`) or a second range: gap lengths that cannot work are now
+  skipped.  Before, every gap length was tried.  100 kb, one thread,
+  `p1=4...4 500...15000 X p1`: an inexact word 47 s → 0.05 s (with
+  indels 372 s → 0.48 s), a weight matrix 115 s → 0.45 s, a second
+  range 161 s → 0.02 s; `p1=8...8 500...15000 p1[1,0,0]` 46 s → 1.8 s.
+  The hits do not change.
+  - An inexact word or a weight unit is tested once at each start of a
+    sequence (in blocks of 1024 starts, when the search first reaches
+    them; the same test as the matcher).
+  - `pN[m,d,i]` uses the index seeds and filters of `~pN[m,d,i]`.
+  - A range followed by a range skips to where the second range can
+    reach the unit after it (not when that unit reads the first range).
+  - `~pN[m,0,0]` / `pN[m,0,0]`: index seeds now need 4 x (m + 1)
+    letters (5 x (m + 1) before): `[1,0,0]` is fast from 8 letters.
+  - A short `[m,d,i]` with as many changes as letters is no longer
+    filtered, and a word with as many changes as letters is not skipped
+    (it matches everywhere: the filter was only extra work).
+  - When the skipping of these units finds almost nothing to skip (the
+    unit matches nearly everywhere), it is turned off for a while and
+    tried again later.  Patterns of this kind (a 1-column weight matrix
+    that nearly always passes, a 2-6 letter name with 3-4 changes) can
+    still be up to about 1.3 x slower than without skipping.
+  - The patterns that were fast before (exact units, `~pN[m,0,0]`) take
+    the same path as in 0.4.3: at most 1.2 % more instructions
+    (cachegrind, 5 TIR patterns, 2 Mb).
+- `--lint` says "slow" only for the cases that are still slow.
+- Tests: `fuzz_skip.py --slow` (with and without skipping, 4 kinds of
+  unit); `tests/skip_units.rs`; `fuzz_compare.py` ignores errors when
+  it removes its temporary folders (NFS).
+
+### Changed
+- `--progress` with `-t 1`: the line now also shows the strand and the
+  Mb reached in a long record (at least 2 Mb), as with `-t N`; such a
+  record is then searched in 1 Mb pieces.  The hit count is updated
+  while a record is searched, not only when it ends (also with `-t N`).
+  The output does not change (`fuzz_threads.py` with `FUZZ_PROGRESS=1`:
+  2 991 cases, no difference; B. napus A1, 00_DTC and 08_DTH `-o 1`,
+  same md5).
+- README: the `-n` row says that the original README is wrong (`-n` is
+  not a hit limit; use `-m`).  The meaning of `-n` does not change.
+- The short usage text after an option error: `-o N` (the C text showed
+  `-o` without its value, so `-o -c` took `-c` as the value), no
+  `errflag=... optind=... argc=...` debug line, and a line that points
+  to `--help`.  Exit status 2 as before.  Only stderr of an option error
+  changes; `fuzz_compare.py` treats the old and new text as the same.
+
 ## 0.4.4 — 2026-10-15
 
 Documentation and new pattern files; the search and its output do not

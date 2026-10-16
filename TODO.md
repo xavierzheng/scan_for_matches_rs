@@ -52,17 +52,14 @@
       banded DP for `~pN[m,d,i]` after a wide gap (default, same
       output; Maverick `[2,1,1]` 9.4 h → 280 s), and `--align` (every
       alignment length; greedy misses 16.7 % → 0 %).
-- [ ] `--progress` with `-t 1` (2026-10-10): the line shows only the
-      record searched now, not how far the search is in it (with
-      `-t N` it shows the strand and the Mb reached, from the pieces).
-      The one-thread search runs inside `Engine::first_match` /
-      `cont_match` (`pattern_match` moves the start on its own), so
-      the position is not seen from `main.rs`.  Ideas: the engine
-      writes its start position to an atomic every few Mb (cost: check
-      the speed, as with `unit_masks`); or `-t 1` also searches long
-      records in pieces (`first_match_in`) and joins them like
-      `join_piece` (more code, the output must stay the same).  Also:
-      the hit count is updated only when a record ends.
+- [x] `--progress` with `-t 1` (2026-10-10, done 2026-10-15): the line
+      showed only the record searched now, not how far the search was in
+      it, and the hit count was updated only when a record ended.  Done:
+      with `--progress`, `-t 1` searches a record of at least 2 pieces in
+      pieces (`first_match_in`, `scan_strand`); each piece starts a new
+      search and skips hits that start before the end of the last one,
+      as `cont_match` does, so the output is the same.  Hits are counted
+      when printed (`-t N`: after each piece).
 
 ## Platforms
 
@@ -148,8 +145,10 @@ output stays the same as the C program.  A record, not a task list.
       `0...0`) is reported as "failed to parse pattern".
 - The value of `-o N` is not used; the usage text is not correct
       (`-n`/`-m` shown with values, `-o` without).
-      (2026-10-08: `--help` now shows the correct options; the short
-      usage text printed on an option error is still the old one.)
+      (2026-10-08: `--help` now shows the correct options.  2026-10-15:
+      the short usage text after an option error is new too: `-o N`, no
+      `errflag=...` debug line, and a pointer to `--help`.  The value of
+      `-o` is still not used.)
 - `length(...)` can use the last match length of a name from an
       earlier attempt or an earlier sequence, when that name has not been
       matched yet in the current attempt.
@@ -162,8 +161,9 @@ output stays the same as the C program.  A record, not a task list.
 - `-n`: the original README says `-n 10` limits the output to 10 hits,
       but the C code (and its usage text) uses `-n N` as "stop after N
       sequences without a hit" and `-m N` as the hit limit.  Version 0.1.0
-      follows the code.  Decide which meaning to keep, and correct the
-      README or the code.
+      follows the code.  Decided 2026-10-15: keep the meaning of the code
+      (the same as the C program); the README option table says that the
+      original README is wrong here.
 - The inexact matcher always takes a matching character and never
       tries to skip it with an insert/delete, so some valid alignments
       within the mismatch/insert/delete limits are not found (for example
@@ -277,18 +277,35 @@ Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
 
 `--lint` gives a note for the slow wide gaps.
 
-- Gap skipping works only when the range is followed by an exact
-      word, an exact `~pN`, `~pN[m,d,i]` or an exact `pN`.  For
-      `~pN[m,0,0]` it is fast only when pN has at least 5 x (m + 1)
-      letters (index seeds, 2026-10-09) or 5 exact letters follow; for
-      `~pN[m,d,i]` with inserts or deletes, when pN has at least
-      4 x (m + d + i + 1) letters (2026-10-14); else every gap length
-      is checked (`--lint` says slow; a short `~pN[m,d,i]` checks them
-      with Myers' bit-parallel filter, about 30 x faster than before,
-      but still much slower than with seeds).  A range followed by an inexact
-      word, `pN` with errors, a weight matrix or another range is
-      searched length by length (slow for wide ranges such as
-      `50...30000`).
+- Gap skipping works when the range is followed by an exact word,
+      `~pN` or `pN` (exact or `[m,d,i]`), an inexact word, a weight
+      matrix, or a second range and then one of these.  For
+      `~pN[m,0,0]` / `pN[m,0,0]` it is fast only when pN has at least
+      4 x (m + 1) letters (index seeds; 5 x (m + 1) until 2026-10-15) or
+      5 exact letters follow; with inserts or deletes, when pN has at
+      least 4 x (m + d + i + 1) letters (2026-10-14); else every gap
+      length is checked (`--lint` says slow; a short `[m,d,i]` checks
+      them with Myers' bit-parallel filter, about 30 x faster than
+      before, but still much slower than with seeds).  A range followed
+      by `<pN`, `length(...)`, an alternative, or a range that reads the
+      first range is searched length by length.
+- [x] (2026-10-15) A range followed by an inexact word, `pN[m,d,i]`, a
+      weight matrix or another range was searched length by length
+      (100 kb, `p1=4...4 500...15000 X p1`: 45-372 s, against 0.02 s
+      for an exact word).  Done: `pN[m,d,i]` uses the seeds and
+      filters of `~pN[m,d,i]`; an inexact word and a weight unit are
+      tested once at each start of a sequence (blocks of 1024 starts,
+      when the search first reaches them; the same test as the
+      matcher, so the hits cannot change); a second range skips to
+      where it can reach the unit after it.  Mismatch seeds also use
+      blocks of 4 letters.  Same output (`fuzz_skip.py --slow`, the
+      other fuzz tests, the 22 patterns).
+- Since 2026-10-15: a unit after a wide range that matches nearly
+      everywhere (a weight matrix whose cutoff nearly always passes, a
+      2-6 letter `pN` with 3-4 changes) can be up to about 1.3 x slower
+      with skipping than without it (11 such fuzz cases: 0.95-1.35 x).
+      The skipping turns itself off for a while when it finds nothing
+      to skip (`next_start_other`), but each call still costs a little.
 - With `-t N` on many long records and a fast pattern, splitting
       long records into pieces is slower than one thread per record
       (each thread copied each long record, until the shared strands;

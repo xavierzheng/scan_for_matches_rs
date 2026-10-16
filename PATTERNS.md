@@ -1092,16 +1092,36 @@ Or skip `-c`: a symmetric pattern needs only one strand.
 
 ### 8. A wide gap before an inexact unit
 
-A wide range, like `500...15000`, followed by an exact word is fast. The program skips gap lengths that cannot work. A wide range followed by a unit with errors can be slow.
+A wide range, like `500...15000`, is fast when the program can skip gap lengths that cannot work. It can skip them when the unit right after the range is one of these:
+
+| Unit after the wide range | Speed |
+|---|---|
+| an exact word: `TAGTG` | fast |
+| a word with errors: `TAGTG[1,0,0]`, `CACTACAAG[1,1,1]` | fast |
+| a weight matrix unit `{(..),(..)} > N` (DNA only) | fast |
+| exact `p1` or exact `~p1` | fast |
+| `~p2[1,0,0]` or `p2[1,0,0]`, `p2` has 8 letters or more | fast |
+| `~p2[1,0,0]` or `p2[1,0,0]`, `p2` has 7 letters, and only `p1` (3 letters) after it | slow |
+| `~p2[1,0,0]`, `p2` has 7 letters, then `TAGTG` (5 exact letters) | fast |
+| `~p2[2,0,0]` or `p2[2,0,0]`, `p2` has 12 letters or more | fast |
+| `~p2[2,1,1]`, `p2` has 20 letters or more | fast |
+| `~p2[2,1,1]`, `p2` has 19 letters, then `TAGTG` | slow |
+| `<p1`, or an alternative `( A \| B )` | slow |
+
+A second range can come between. Then the unit after the second range decides, if that unit does not use the letters of the first range (as `p1` does when the first range is `p1=500...15000`). `p1=3...3 500...15000 20...30 TAGTG p1` is fast. `p1=500...15000 20...30 p1` is slow, because `p1` reads the first range.
+
+Also slow: `length(...)`, protein mode `-p`, and patterns that use matches of earlier attempts. Slow only changes the time. The hits are the same.
+
+For a name with mismatches only (`[m,0,0]`), the name needs at least 4 x (m + 1) letters (8 for `[1,0,0]`, 12 for `[2,0,0]`), or 5 exact letters must follow it. With deletions or insertions (`[m,d,i]`), the name needs at least 4 x (m + d + i + 1) letters (20 for `[2,1,1]`); exact letters after it do not help.
 
 ```
-$ echo 'p1=3...3 CACTA p2=7...7 500...15000 TAGTG[1,0,0] ~p2 p1' > w9.pat
+$ echo 'p1=3...3 CACTA p2=7...7 500...15000 ~p2[1,0,0] p1' > w9.pat
 $ scan_for_matches --lint --strict-n w9.pat
-w9.pat:1: note: slow: each gap length of `500...15000` is tried (`TAGTG[1,0,0]` after it cannot be used to skip gap lengths)
+w9.pat:1: note: slow: each gap length of `500...15000` is tried (`~p2[1,0,0]` has mismatches and too few letters to look up: give the name at least 4 letters per allowed mismatch + 4, or put 5 exact letters after it)
 0 errors, 0 warnings, 1 notes
 ```
 
-Right: put the exact words first, and put errors only on the `~p2[1,0,0]` unit. It is fast when `p2` has at least 10 letters (5 more per extra mismatch: 15 for `[2,0,0]`), or when 5 exact letters follow it, as `TAGTG` here. With deletions or insertions (`~p2[2,1,1]`) it is fast when `p2` has at least 4 letters per allowed change + 4 (20 for `[2,1,1]`); exact letters after it do not help. Or make the gap narrower. `--lint` tells you when it is slow.
+Right: make `p2` longer (8 letters: `p2=8...8`), or put 5 exact letters after the unit (`~p2[1,0,0] TAGTG`), or make the gap narrower. `--lint` tells you when it is slow.
 
 ### 9. Two lines joined into one pattern
 

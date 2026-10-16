@@ -6,6 +6,7 @@ usage: fuzz_compare.py [--compat] C_BINARY RUST_BINARY [N_CASES] [SEED]
 """
 import os
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -229,8 +230,8 @@ def run(binary, args, pat_path, inp):
         p = subprocess.run([binary] + args + [pat_path], input=inp, capture_output=True, timeout=TIMEOUT)
         # getopt prints argv[0]; the two binaries live in different places
         err = p.stderr.replace(binary.encode(), b"PROG")
-        # options added after the C program (shown in the usage text)
-        err = err.replace(b" [-t threads]", b"")
+        # the usage text after an option error was rewritten (TODO.md C)
+        err = re.sub(rb"(errflag=[^\n]*\n)?usage: scan_for_matches[^\n]*\n(scan_for_matches --help[^\n]*\n)?", b"USAGE\n", err)
         return (p.returncode, p.stdout, err)
     except subprocess.TimeoutExpired:
         return ("TIMEOUT", b"", b"")
@@ -250,7 +251,7 @@ def one(case):
         args += ["-o", "1"]
     if r.random() < 0.02:
         args += [r.choice(["-x", "--", "-o"] if COMPAT else ["-x", "-n", "-m", "--", "-o"])]
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         pp = os.path.join(d, "pat")
         with open(pp, "wb") as f:
             f.write(pat.encode("latin1") + b"\n")
@@ -261,7 +262,7 @@ def one(case):
     if a != b:
         # Is the C program itself stable on this input?  Some undefined
         # behaviour in C depends on address-space randomisation.
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
             pp = os.path.join(d, "pat")
             with open(pp, "wb") as f:
                 f.write(pat.encode("latin1") + b"\n")
