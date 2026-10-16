@@ -61,6 +61,22 @@
       as `cont_match` does, so the output is the same.  Hits are counted
       when printed (`-t N`: after each piece).
 
+- [ ] (2026-10-16, not decided) A unit after a wide range that
+      matches nearly everywhere is up to about 1.3 x slower with
+      skipping (see "Speed: known limits").  Idea: keep the current
+      `UnitBits` of each range in engine fields and test the bit at
+      `xlo` inline in `next_start`, so a dense unit costs one load.
+      Check with cachegrind that the 22 TIR patterns do not get slower.
+- [ ] (2026-10-16, not decided) `--lint` says "slow" for a short
+      `~pN[m,d,i]` (< 4 x (m + d + i + 1) letters), which uses the
+      Myers filter: DTM_G indel 100 Mb about 6 min (mm2: 4 s).  Maybe a
+      milder note ("slower") for this case.
+- [ ] (2026-10-16) The example outputs in `USER_GUIDE.md` and
+      `USER_GUIDE_zh.md` were made with 0.4.3 (the GFF3 header line
+      says `scan_for_matches 0.4.3`).  The hits are the same in 0.4.5;
+      only that line differs.  Run the examples again at the next
+      release that changes output.
+
 ## Platforms
 
 - [x] Linux x86_64: decide if Linux needs its own reference.
