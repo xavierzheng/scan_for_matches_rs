@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.6 — 2026-10-30
 
 ### Faster
 - A unit after a wide range that matches nearly everywhere (a weight

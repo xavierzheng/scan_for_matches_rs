@@ -77,7 +77,10 @@ scan_for_matches --help      # all options
 
 Newest first:
 
-* **0.4.5** (this version) – faster after a wide gap: an inexact word,
+* **0.4.6** (this version) – a unit after a wide gap that matches
+  nearly everywhere is no longer up to 1.3 x slower with skipping than
+  without it (now at most about 1.07 x).  The hits do not change.
+* **0.4.5** – faster after a wide gap: an inexact word,
   a weight matrix, `pN[m,d,i]` or a second range after it no longer
   makes the search try every gap length (100 kb: 47-372 s → 0.02-0.5 s;
   see Speed); `~pN[m,0,0]` is looked up from 4 x (m + 1) letters;
@@ -262,7 +265,7 @@ GFF3 of one hit (`>chr1:[21,80]`):
 
 ```
 ##gff-version 3
-# scan_for_matches 0.4.5 pattern=cacta.pat
+# scan_for_matches 0.4.6 pattern=cacta.pat
 ##sequence-region chr1 1 95
 chr1  scan_for_matches  repeat_region                         21  80  .  +  .  ID=DTC1;Name=DTC1;Classification=TIR/DTC;Method=structural;Sequence_ontology=SO:0000657
 chr1  scan_for_matches  target_site_duplication               21  23  .  +  .  ID=DTC1.lTSD;Parent=DTC1;Name=DTC1;...
