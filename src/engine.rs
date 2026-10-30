@@ -127,15 +127,17 @@ const SCAN_LIMIT: i64 = 48;
 /// In `O_SKIP`: the unit is skipped by `next_start_other` (unit addresses
 /// are even).
 const SKIP_OTHER: i64 = 1;
+/// Field of a range unit whose `O_SKIP` has SKIP_OTHER (free in the C
+/// union for ranges): skipping is off (`next_start_other`) for this many
+/// more gap lengths, which are tried one by one.
+const O_OFF: i64 = 80;
 
-/// `next_start_other`: how often it skipped nothing.
+/// `next_start_other` for one range: how often it skipped too little.
 #[derive(Default)]
 struct OtherStats {
-    unit: i64,
+    range: i64,
     calls: u32,
     useless: u32,
-    /// calls left that return xlo at once
-    off: u32,
     backoff: u32,
 }
 
@@ -2121,6 +2123,7 @@ impl Engine {
                         0
                     };
                     self.w64(pu + O_SKIP, if target != 0 { target | tag } else { 0 });
+                    self.w32(pu + O_OFF, 0);
                     // after `~pN[m,d,i]` with indels the next unit has no
                     // fixed place; only units with masks have a chain
                     if target != 0
@@ -2410,43 +2413,55 @@ impl Engine {
 
     /// `next_start` for an inexact word, a weight unit, a second range, a
     /// `pN[m,d,i]` or a `~pN` with indels.  When it skips almost nothing
-    /// (the unit matches nearly everywhere)
-    /// it only costs time: then it is off for a while (it returns xlo, as
-    /// with no skipping), and tried again later, off longer each time.
+    /// (the unit matches nearly everywhere) it only costs time: then it is
+    /// off for a while (`O_OFF` of the range: the matcher tries each gap
+    /// length, as with no skipping), and tried again later, off longer
+    /// each time.
     #[inline(never)]
     fn next_start_other(&mut self, n: i64, range: i64, xlo: i64, xhi: i64, er: i64) -> Option<i64> {
-        let k = match self.other_stats.iter().position(|s| s.unit == n) {
+        // a call that skips fewer than min_skip positions costs more than
+        // it saves
+        let (r, min_skip) = match self.r32(n + O_TYPE) {
+            RANGE_PUNIT => (self.next_start_range(n, xlo, xhi, er), 2),
+            SIM_PUNIT | WEIGHT_PUNIT => (self.next_start_bits(n, xlo, xhi, er), 2),
+            _ => {
+                let r = self.next_start_far(n, range, xlo, xhi, er);
+                // pN without seeds (fewer than 4 x (m + d + i + 1)
+                // letters): each call scans from xlo, which costs more
+                // than the matcher trying a few lengths
+                let e = (self.mask_mis + self.mask_ins + self.mask_del) as usize;
+                (r, if self.mask_tol < 4 * (e + 1) { 12 } else { 2 })
+            }
+        };
+        if range == 0 {
+            // the unit after a second range: the first range keeps the
+            // stats (`next_start_range`)
+            return r;
+        }
+        let k = match self.other_stats.iter().position(|s| s.range == range) {
             Some(k) => k,
             None => {
                 self.other_stats.push(OtherStats {
-                    unit: n,
+                    range,
                     ..Default::default()
                 });
                 self.other_stats.len() - 1
             }
         };
         let s = &mut self.other_stats[k];
-        if s.off > 0 {
-            s.off -= 1;
-            return Some(xlo);
-        }
-        let r = match self.r32(n + O_TYPE) {
-            RANGE_PUNIT => self.next_start_range(n, xlo, xhi, er),
-            SIM_PUNIT | WEIGHT_PUNIT => self.next_start_bits(n, xlo, xhi, er),
-            _ => self.next_start_far(n, range, xlo, xhi, er),
-        };
-        let s = &mut self.other_stats[k];
         s.calls += 1;
-        s.useless += (r == Some(xlo)) as u32;
+        s.useless += (r.unwrap_or(xhi + 1) - xlo < min_skip) as u32;
         if s.calls == 1024 {
+            let mut off = 0;
             if s.useless >= 896 {
-                s.off = 1024 << s.backoff;
+                off = 1024 << s.backoff;
                 s.backoff = (s.backoff + 1).min(10);
             } else {
                 s.backoff = 0;
             }
             s.calls = 0;
             s.useless = 0;
+            self.w32(range + O_OFF, off);
         }
         r
     }
@@ -3683,6 +3698,20 @@ impl Engine {
                 }
             };
         }
+        // the range skips to the unit after it (`O_SKIP` = n), unless
+        // `next_start_other` turned that off for a while: then its gap
+        // lengths are tried one by one, as without skipping
+        macro_rules! skip_on {
+            ($n:expr) => {
+                $n & SKIP_OTHER == 0 || {
+                    let off = g32!(O_OFF);
+                    off == 0 || {
+                        s32!(O_OFF, off - 1);
+                        false
+                    }
+                }
+            };
+        }
 
         // SUCCESS: record the match length, go on with the next unit (TRY)
         // or, after the last unit, LEAVE
@@ -3772,7 +3801,7 @@ impl Engine {
                                     let mn = g32!(O_U0);
                                     s32!(O_U8, mn.wrapping_add(1));
                                     let n = if P::CHECKED { 0 } else { g64!(O_SKIP) };
-                                    if n != 0 {
+                                    if n != 0 && skip_on!(n) {
                                         // go straight to the first gap length
                                         // where the next unit can match
                                         let hit = g64!(O_HIT);
@@ -4028,7 +4057,7 @@ impl Engine {
                         let min = g32!(O_U0);
                         let width = g32!(O_U4);
                         let n = if P::CHECKED { 0 } else { g64!(O_SKIP) };
-                        if n != 0 {
+                        if n != 0 && skip_on!(n) {
                             // same as below, but only gap lengths where the
                             // next unit can match are tried
                             let mut hit = sr;

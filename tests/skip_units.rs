@@ -108,6 +108,10 @@ fn new_skips_same_as_no_skip() {
         "p1=4...4 50...700 0...30 ACGTACGT p1",
         "p1=4...4 p2=12...12 40...700 3...9 p2[1,0,0] p1",
         "p1=4...4 50...700 0...20 CACTACAAGAAA[1,0,0]",
+        // E: units that match nearly everywhere (skipping turns itself off
+        // for a while: the lengths are then tried one by one)
+        "p1=4...4 50...700 {(25,25,25,25)} > 10 p1",
+        "p1=4...4 p2=6...6 50...700 p2[1,1,1] p1",
     ];
     let mut total = 0;
     for pat in pats {

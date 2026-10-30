@@ -61,12 +61,20 @@
       as `cont_match` does, so the output is the same.  Hits are counted
       when printed (`-t N`: after each piece).
 
-- [ ] (2026-10-16, not decided) A unit after a wide range that
-      matches nearly everywhere is up to about 1.3 x slower with
-      skipping (see "Speed: known limits").  Idea: keep the current
-      `UnitBits` of each range in engine fields and test the bit at
-      `xlo` inline in `next_start`, so a dense unit costs one load.
-      Check with cachegrind that the 22 TIR patterns do not get slower.
+- [x] (2026-10-16) A unit after a wide range that matches nearly
+      everywhere was up to about 1.3 x slower with skipping (see
+      "Speed: known limits").  Done another way: the bit test was not
+      the cost.  Cachegrind showed 2 causes: (1) while the skipping
+      was off, each gap length still called `next_start_other` (a call
+      and a list search, about 55 instructions); now the off counter
+      is a field of the range (`O_OFF`) and the matcher tests it
+      inline; (2) a short `pN[m,d,i]` without seeds stayed on, because
+      it skipped 1-2 positions per call, but its Myers scan cost more
+      than trying those lengths; now a call that skips fewer than 2
+      positions (12 for a pN without seeds) counts as useless.  14 fuzz
+      cases: 0.98-1.33 x → 0.97-1.07 x of no skipping; 22 TIR patterns
+      -0.9 % to +0.02 % (cachegrind; dense cases kept in
+      `bench_mut/dense_cases/`).
 - [ ] (2026-10-16, not decided) `--lint` says "slow" for a short
       `~pN[m,d,i]` (< 4 x (m + d + i + 1) letters), which uses the
       Myers filter: DTM_G indel 100 Mb about 6 min (mm2: 4 s).  Maybe a
@@ -318,10 +326,11 @@ Measured on maize (2.3 Gb, 10 chromosomes of about 300 Mb, bgzip),
       other fuzz tests, the 22 patterns).
 - Since 2026-10-15: a unit after a wide range that matches nearly
       everywhere (a weight matrix whose cutoff nearly always passes, a
-      2-6 letter `pN` with 3-4 changes) can be up to about 1.3 x slower
-      with skipping than without it (11 such fuzz cases: 0.95-1.35 x).
-      The skipping turns itself off for a while when it finds nothing
-      to skip (`next_start_other`), but each call still costs a little.
+      2-6 letter `pN` with 3-4 changes) can be a little slower with
+      skipping than without it.  The skipping turns itself off for a
+      while when it skips (almost) nothing; then each gap length costs
+      one more counter test.  14 such fuzz cases: 0.95-1.35 x until
+      2026-10-16, now 0.97-1.07 x (instructions).
 - With `-t N` on many long records and a fast pattern, splitting
       long records into pieces is slower than one thread per record
       (each thread copied each long record, until the shared strands;

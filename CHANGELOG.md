@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Faster
+- A unit after a wide range that matches nearly everywhere (a weight
+  matrix whose cutoff nearly always passes, a 2-6 letter `pN` with 3-4
+  changes) is no longer up to 1.3 x slower with skipping than without
+  it.  While the skipping is off, the matcher now tries the gap lengths
+  directly (no function call per length).  The skipping also turns off
+  when most calls skip fewer than 2 positions (12 for a short
+  `pN[m,d,i]` without index seeds: its scan costs more than trying a
+  few lengths); before, only calls that skipped nothing counted.
+  13 such fuzz cases, skipping against `SFM_NO_SKIP=1` (instructions,
+  records cut to 1 500 bases): 0.98-1.33 x → 0.97-1.07 x; one more
+  (`p2=3...3 18...318 12...42 p2[0,1,0] c`, found by the fuzz test):
+  1.27 x → 1.03 x.  The 22 TIR
+  patterns: -0.9 % to +0.02 % instructions (2 Mb).  The hits do not
+  change.
+- Tests: `tests/skip_units.rs` has 2 patterns that match nearly
+  everywhere.
+
 ## 0.4.5 — 2026-10-16
 
 ### Faster
